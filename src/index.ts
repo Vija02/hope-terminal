@@ -88,11 +88,12 @@ async function handlePowerDisconnect(): Promise<void> {
   // Stop screen monitoring first
   stopScreenMonitor();
   
-  // 1. Send SIGINT to command and wait for graceful exit
+  // 1. Send SIGINT and wait for the command to exit
   if (managedProcess && managedProcess.isRunning()) {
-    console.log("[Main] Step 1: Stopping user command gracefully...");
-    await managedProcess.gracefulStop();
-    console.log("[Main] Step 1: User command stopped");
+    console.log("[Main] Step 1: Sending SIGINT to user command...");
+    managedProcess.process.kill("SIGINT");
+    await managedProcess.process.exited;
+    console.log("[Main] Step 1: User command exited");
   } else {
     console.log("[Main] Step 1: No running command to stop");
   }
