@@ -1,9 +1,9 @@
 // Power Monitor - Detects when AC power is disconnected
 // 
-// On Ubuntu laptops, power supply status is exposed via sysfs:
-// /sys/class/power_supply/AC0/online or /sys/class/power_supply/ACAD/online
+// On Ubuntu laptops, battery status is exposed via sysfs:
+// /sys/class/power_supply/BAT0/status
 // 
-// Value: 1 = plugged in, 0 = on battery
+// Values: "Charging", "Discharging", "Full", "Not charging"
 
 import { readdir } from "node:fs/promises";
 
@@ -19,36 +19,27 @@ export interface PowerMonitorOptions {
 const POWER_SUPPLY_PATH = "/sys/class/power_supply";
 
 /**
- * Find the AC adapter path in /sys/class/power_supply
- * Common names: AC, AC0, ACAD, ADP0, ADP1
+ * Find the battery status path in /sys/class/power_supply
+ * Common names: BAT0, BAT1
  */
-async function findAcAdapterPath(): Promise<string | null> {
+async function findBatteryStatusPath(): Promise<string | null> {
   try {
     const entries = await readdir(POWER_SUPPLY_PATH);
     
-    // Look for AC adapter (not battery)
-    const acPatterns = ["AC", "ACAD", "ADP"];
+    // Look for battery
+    const batteryPatterns = ["BAT"];
     
     for (const entry of entries) {
-      const isAcAdapter = acPatterns.some(pattern => 
+      const isBattery = batteryPatterns.some(pattern => 
         entry.toUpperCase().startsWith(pattern)
       );
       
-      if (isAcAdapter) {
-        const onlinePath = `${POWER_SUPPLY_PATH}/${entry}/online`;
-        const file = Bun.file(onlinePath);
+      if (isBattery) {
+        const statusPath = `${POWER_SUPPLY_PATH}/${entry}/status`;
+        const file = Bun.file(statusPath);
         if (await file.exists()) {
-          return onlinePath;
+          return statusPath;
         }
-      }
-    }
-    
-    // Fallback: check for any device with an "online" file
-    for (const entry of entries) {
-      const onlinePath = `${POWER_SUPPLY_PATH}/${entry}/online`;
-      const file = Bun.file(onlinePath);
-      if (await file.exists()) {
-        return onlinePath;
       }
     }
     
@@ -59,16 +50,18 @@ async function findAcAdapterPath(): Promise<string | null> {
 }
 
 /**
- * Read current power status
+ * Read current power status from battery status file
+ * "Charging" or "Full" or "Not charging" = on AC
+ * "Discharging" = on battery
  */
-async function readPowerStatus(acPath: string): Promise<PowerStatus> {
+async function readPowerStatus(batteryStatusPath: string): Promise<PowerStatus> {
   try {
-    const file = Bun.file(acPath);
+    const file = Bun.file(batteryStatusPath);
     const content = await file.text();
-    const value = content.trim();
+    const value = content.trim().toLowerCase();
     
-    if (value === "1") return "ac";
-    if (value === "0") return "battery";
+    if (value === "discharging") return "battery";
+    if (value === "charging" || value === "full" || value === "not charging") return "ac";
     return "unknown";
   } catch {
     return "unknown";
@@ -85,10 +78,10 @@ export async function startPowerMonitor(options: PowerMonitorOptions): Promise<{
 }> {
   const pollInterval = options.pollInterval ?? 2000;
   
-  const acPath = await findAcAdapterPath();
+  const batteryStatusPath = await findBatteryStatusPath();
   
-  if (!acPath) {
-    console.warn("[PowerMonitor] No AC adapter found in /sys/class/power_supply");
+  if (!batteryStatusPath) {
+    console.warn("[PowerMonitor] No battery found in /sys/class/power_supply");
     console.warn("[PowerMonitor] Power monitoring disabled - running without power detection");
     
     return {
@@ -97,9 +90,9 @@ export async function startPowerMonitor(options: PowerMonitorOptions): Promise<{
     };
   }
   
-  console.log(`[PowerMonitor] Found AC adapter at: ${acPath}`);
+  console.log(`[PowerMonitor] Found battery status at: ${batteryStatusPath}`);
   
-  let currentStatus = await readPowerStatus(acPath);
+  let currentStatus = await readPowerStatus(batteryStatusPath);
   let isRunning = true;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   
@@ -108,7 +101,7 @@ export async function startPowerMonitor(options: PowerMonitorOptions): Promise<{
   const poll = async () => {
     if (!isRunning) return;
     
-    const newStatus = await readPowerStatus(acPath);
+    const newStatus = await readPowerStatus(batteryStatusPath);
     
     // Detect transition from AC to battery
     if (currentStatus === "ac" && newStatus === "battery") {
