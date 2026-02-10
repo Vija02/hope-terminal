@@ -107,8 +107,16 @@ async function handlePowerDisconnect(): Promise<void> {
 }
 
 /**
+ * Check if browser is still running
+ */
+function isBrowserRunning(): boolean {
+  return browser !== null && browser.process.exitCode === null;
+}
+
+/**
  * Start continuous screen monitoring
  * Launches browser when secondary screen is detected, closes when disconnected
+ * Also relaunches browser if it was closed (e.g., Alt+F4)
  */
 function startScreenMonitor(): void {
   console.log(`[Main] Starting screen monitor (checking every ${SCREEN_DETECT_INTERVAL_MS / 1000}s)...`);
@@ -120,27 +128,36 @@ function startScreenMonitor(): void {
     
     const secondaryScreen = await findSecondaryScreen();
     
-    // Screen connected
-    if (secondaryScreen && !browser) {
-      console.log(`\n[Main] Secondary screen detected: ${secondaryScreen.name}`);
+    // Screen connected but no browser (or browser was closed)
+    if (secondaryScreen && !isBrowserRunning()) {
+      if (browser) {
+        // Browser was closed (e.g., Alt+F4)
+        console.log(`\n[Main] Browser was closed, relaunching on ${secondaryScreen.name}...`);
+        browser = null;
+      } else {
+        console.log(`\n[Main] Secondary screen detected: ${secondaryScreen.name}`);
+      }
+      
       currentScreenName = secondaryScreen.name;
       browser = await launchBrowser(secondaryScreen);
       
       if (!browser) {
-        console.warn("[Main] Failed to launch browser on newly detected screen");
+        console.warn("[Main] Failed to launch browser on screen");
       }
     }
     // Screen disconnected
     else if (!secondaryScreen && browser) {
       console.log(`\n[Main] Secondary screen disconnected (was: ${currentScreenName})`);
-      await browser.close();
+      if (isBrowserRunning()) {
+        await browser.close();
+      }
       browser = null;
       currentScreenName = null;
     }
     // Screen changed (different screen connected)
-    else if (secondaryScreen && browser && secondaryScreen.name !== currentScreenName) {
+    else if (secondaryScreen && isBrowserRunning() && secondaryScreen.name !== currentScreenName) {
       console.log(`\n[Main] Screen changed from ${currentScreenName} to ${secondaryScreen.name}`);
-      await browser.close();
+      await browser!.close();
       currentScreenName = secondaryScreen.name;
       browser = await launchBrowser(secondaryScreen);
       

@@ -43,6 +43,94 @@ export interface BrowserInstance {
 }
 
 /**
+ * Move window to specified screen using xdotool
+ */
+async function moveWindowToScreen(pid: number, screen: ScreenInfo): Promise<boolean> {
+  try {
+    // Wait a bit for the window to be created
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    
+    // Find window by PID
+    const searchProc = Bun.spawn(["xdotool", "search", "--pid", String(pid)], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    
+    const windowIds = (await new Response(searchProc.stdout).text()).trim().split("\n").filter(Boolean);
+    await searchProc.exited;
+    
+    if (windowIds.length === 0) {
+      console.warn("[Browser] Could not find window by PID, trying by name...");
+      
+      // Fallback: search by window name
+      const nameSearchProc = Bun.spawn(["xdotool", "search", "--name", "Chromium"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      
+      const nameWindowIds = (await new Response(nameSearchProc.stdout).text()).trim().split("\n").filter(Boolean);
+      await nameSearchProc.exited;
+      
+      if (nameWindowIds.length === 0) {
+        console.error("[Browser] Could not find any browser window");
+        return false;
+      }
+      
+      windowIds.push(...nameWindowIds);
+    }
+    
+    // Move each window (usually just one, but handle multiple tabs)
+    for (const windowId of windowIds) {
+      console.log(`[Browser] Moving window ${windowId} to position ${screen.xOffset},${screen.yOffset}`);
+      
+      // Remove maximized state first
+      const unmaxProc = Bun.spawn(["wmctrl", "-i", "-r", windowId, "-b", "remove,maximized_vert,maximized_horz"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await unmaxProc.exited;
+      
+      // Move and resize the window
+      const moveProc = Bun.spawn([
+        "xdotool",
+        "windowmove",
+        windowId,
+        String(screen.xOffset),
+        String(screen.yOffset),
+      ], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      await moveProc.exited;
+      
+      const resizeProc = Bun.spawn([
+        "xdotool",
+        "windowsize",
+        windowId,
+        String(screen.width),
+        String(screen.height),
+      ], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      await resizeProc.exited;
+      
+      // Make it fullscreen
+      const fullscreenProc = Bun.spawn(["wmctrl", "-i", "-r", windowId, "-b", "add,fullscreen"], {
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await fullscreenProc.exited;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error("[Browser] Failed to move window:", error);
+    return false;
+  }
+}
+
+/**
  * Launch Chromium in kiosk mode on the specified screen
  */
 export async function launchBrowser(screen: ScreenInfo): Promise<BrowserInstance | null> {
@@ -56,11 +144,11 @@ export async function launchBrowser(screen: ScreenInfo): Promise<BrowserInstance
   
   const args = [
     chromium,
-    // Kiosk mode
-    "--kiosk",
+    // Don't use kiosk mode initially - we'll fullscreen after moving
+    // "--kiosk",
     // Allow autoplay without user gesture
     "--autoplay-policy=no-user-gesture-required",
-    // Position on secondary screen
+    // Position on secondary screen (hint, may not work reliably)
     `--window-position=${screen.xOffset},${screen.yOffset}`,
     // Fullscreen size matching screen
     `--window-size=${screen.width},${screen.height}`,
@@ -76,15 +164,15 @@ export async function launchBrowser(screen: ScreenInfo): Promise<BrowserInstance
     "--disable-features=TranslateUI",
     // Disable password manager prompts
     "--disable-save-password-bubble",
-    // Start maximized
-    "--start-maximized",
+    // New window
+    "--new-window",
     // Disable GPU if it causes issues (uncomment if needed)
     // "--disable-gpu",
     // The URL to open
     TARGET_URL,
   ];
   
-  console.log(`[Browser] Launching ${chromium} in kiosk mode on ${screen.name}`);
+  console.log(`[Browser] Launching ${chromium} on ${screen.name}`);
   console.log(`[Browser] Position: ${screen.xOffset},${screen.yOffset}, Size: ${screen.width}x${screen.height}`);
   console.log(`[Browser] URL: ${TARGET_URL}`);
   
@@ -103,6 +191,13 @@ export async function launchBrowser(screen: ScreenInfo): Promise<BrowserInstance
   }
   
   console.log(`[Browser] Browser started with PID: ${process.pid}`);
+  
+  // Move window to correct screen using xdotool
+  const moved = await moveWindowToScreen(process.pid, screen);
+  if (!moved) {
+    console.warn("[Browser] Could not move window to secondary screen, it may be on the wrong display");
+    console.warn("[Browser] Install xdotool and wmctrl: sudo apt install xdotool wmctrl");
+  }
   
   return {
     process,
