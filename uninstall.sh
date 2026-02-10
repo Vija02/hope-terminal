@@ -1,11 +1,11 @@
 #!/bin/bash
 # Hope Terminal - Uninstall Script
-# This script removes the hope-terminal init.d service
+# This script removes hope-terminal autostart and sudoers config
 
 set -e
 
 SERVICE_NAME="hope-terminal"
-INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -24,43 +24,74 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Check if service exists
-if [ ! -f "$INIT_SCRIPT" ]; then
-    echo -e "${YELLOW}Service is not installed.${NC}"
-    exit 0
+# Detect the actual user (not root)
+if [ -n "$SUDO_USER" ]; then
+    ACTUAL_USER="$SUDO_USER"
+else
+    ACTUAL_USER=$(stat -c '%U' "$SCRIPT_DIR")
 fi
 
-# Stop the service if running
-echo -e "${GREEN}Stopping service...${NC}"
-"$INIT_SCRIPT" stop 2>/dev/null || true
-
-# Remove runlevel symlinks
-echo -e "${GREEN}Removing runlevel symlinks...${NC}"
-for rl in 0 1 2 3 4 5 6; do
-    rm -f "/etc/rc${rl}.d/S99${SERVICE_NAME}"
-    rm -f "/etc/rc${rl}.d/K01${SERVICE_NAME}"
-done
-
-# Remove the init script
-echo -e "${GREEN}Removing init script...${NC}"
-rm -f "$INIT_SCRIPT"
-
-# Remove wrapper script if exists
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WRAPPER_SCRIPT="${SCRIPT_DIR}/run-service.sh"
-if [ -f "$WRAPPER_SCRIPT" ]; then
-    echo -e "${GREEN}Removing wrapper script...${NC}"
-    rm -f "$WRAPPER_SCRIPT"
+if [ "$ACTUAL_USER" = "root" ]; then
+    echo -e "${YELLOW}Warning: Could not detect non-root user, using script directory owner${NC}"
 fi
 
-# Remove pidfile and logfile
-rm -f /var/run/hope-terminal.pid
-echo -e "${YELLOW}Note: Log file kept at /var/log/hope-terminal.log${NC}"
+ACTUAL_USER_HOME=$(eval echo "~$ACTUAL_USER")
+
+# Step 1: Stop and disable systemd user service
+echo -e "${GREEN}Step 1: Stopping systemd user service...${NC}"
+su - "$ACTUAL_USER" -c "systemctl --user stop hope-terminal.service" 2>/dev/null || true
+su - "$ACTUAL_USER" -c "systemctl --user disable hope-terminal.service" 2>/dev/null || true
+
+# Step 2: Remove systemd user service
+SYSTEMD_SERVICE="${ACTUAL_USER_HOME}/.config/systemd/user/hope-terminal.service"
+if [ -f "$SYSTEMD_SERVICE" ]; then
+    echo -e "${GREEN}Removing systemd user service...${NC}"
+    rm -f "$SYSTEMD_SERVICE"
+    su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" 2>/dev/null || true
+fi
+
+# Step 3: Remove autostart desktop entry
+DESKTOP_FILE="${ACTUAL_USER_HOME}/.config/autostart/hope-terminal.desktop"
+if [ -f "$DESKTOP_FILE" ]; then
+    echo -e "${GREEN}Removing autostart entry...${NC}"
+    rm -f "$DESKTOP_FILE"
+fi
+
+# Step 4: Remove launcher script
+LAUNCHER_SCRIPT="${SCRIPT_DIR}/run-hope-terminal.sh"
+if [ -f "$LAUNCHER_SCRIPT" ]; then
+    echo -e "${GREEN}Removing launcher script...${NC}"
+    rm -f "$LAUNCHER_SCRIPT"
+fi
+
+# Step 5: Remove sudoers file
+SUDOERS_FILE="/etc/sudoers.d/hope-terminal-shutdown"
+if [ -f "$SUDOERS_FILE" ]; then
+    echo -e "${GREEN}Removing sudoers configuration...${NC}"
+    rm -f "$SUDOERS_FILE"
+fi
+
+# Step 6: Remove old init.d stuff if present
+if [ -f "/etc/init.d/hope-terminal" ]; then
+    echo -e "${GREEN}Removing old init.d script...${NC}"
+    /etc/init.d/hope-terminal stop 2>/dev/null || true
+    for rl in 0 1 2 3 4 5 6; do
+        rm -f "/etc/rc${rl}.d/S99hope-terminal"
+        rm -f "/etc/rc${rl}.d/K01hope-terminal"
+    done
+    rm -f "/etc/init.d/hope-terminal"
+fi
+
+# Remove old wrapper script if exists
+if [ -f "${SCRIPT_DIR}/run-service.sh" ]; then
+    rm -f "${SCRIPT_DIR}/run-service.sh"
+fi
 
 echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Uninstall Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "Hope Terminal service has been removed."
+echo -e "Hope Terminal has been removed."
+echo -e "Note: Passwordless shutdown has been disabled."
 echo

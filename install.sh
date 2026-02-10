@@ -1,11 +1,10 @@
 #!/bin/bash
 # Hope Terminal - Install Script
-# This script installs hope-terminal as an init.d service
+# This script installs hope-terminal as a user autostart with passwordless shutdown
 
 set -e
 
 SERVICE_NAME="hope-terminal"
-INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for output
@@ -39,10 +38,9 @@ if [ "$ACTUAL_USER" = "root" ]; then
     exit 1
 fi
 
-ACTUAL_USER_ID=$(id -u "$ACTUAL_USER")
 ACTUAL_USER_HOME=$(eval echo "~$ACTUAL_USER")
 
-echo -e "${YELLOW}Detected user:${NC} $ACTUAL_USER (UID: $ACTUAL_USER_ID)"
+echo -e "${YELLOW}Detected user:${NC} $ACTUAL_USER"
 echo -e "${YELLOW}User home:${NC} $ACTUAL_USER_HOME"
 echo -e "${YELLOW}Script directory:${NC} $SCRIPT_DIR"
 echo
@@ -74,207 +72,108 @@ echo
 echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
 echo
 
-# Create the init.d script
-echo -e "${GREEN}Creating init.d script...${NC}"
+# Step 1: Configure passwordless shutdown
+echo -e "${GREEN}Step 1: Configuring passwordless shutdown...${NC}"
 
-cat > "$INIT_SCRIPT" << INITEOF
+SUDOERS_FILE="/etc/sudoers.d/hope-terminal-shutdown"
+cat > "$SUDOERS_FILE" << EOF
+# Allow $ACTUAL_USER to shutdown without password (for hope-terminal)
+$ACTUAL_USER ALL=(ALL) NOPASSWD: /sbin/shutdown
+$ACTUAL_USER ALL=(ALL) NOPASSWD: /sbin/poweroff
+$ACTUAL_USER ALL=(ALL) NOPASSWD: /sbin/reboot
+EOF
+
+chmod 440 "$SUDOERS_FILE"
+echo -e "${GREEN}Created sudoers file at ${SUDOERS_FILE}${NC}"
+
+# Step 2: Create the launcher script
+echo -e "${GREEN}Step 2: Creating launcher script...${NC}"
+
+LAUNCHER_SCRIPT="${SCRIPT_DIR}/run-hope-terminal.sh"
+cat > "$LAUNCHER_SCRIPT" << EOF
 #!/bin/bash
-### BEGIN INIT INFO
-# Provides:          hope-terminal
-# Required-Start:    \$local_fs \$remote_fs \$syslog
-# Required-Stop:     \$local_fs \$remote_fs \$syslog
-# Default-Start:     2 3 4 5
-# Default-Stop:      0 1 6
-# Short-Description: Hope Terminal Kiosk Manager
-# Description:       Manages kiosk display with power-off handling
-### END INIT INFO
+# Hope Terminal Launcher Script
 
-USER_ID="${ACTUAL_USER_ID}"
-USER_NAME="${ACTUAL_USER}"
-USER_HOME="${ACTUAL_USER_HOME}"
-SCRIPT_DIR="${SCRIPT_DIR}"
-BUN_PATH="${BUN_PATH}"
-USER_COMMAND="${USER_COMMAND}"
-PIDFILE="/var/run/hope-terminal.pid"
-LOGFILE="/var/log/hope-terminal.log"
+cd "${SCRIPT_DIR}"
+exec "${BUN_PATH}" run src/index.ts -- "${USER_COMMAND}"
+EOF
 
-get_display_env() {
-    # Wait for display to be available (max 60 seconds)
-    for i in \$(seq 1 60); do
-        # Try to find DISPLAY from the user's session
-        DISPLAY_VAL=\$(su - "\$USER_NAME" -c 'echo \$DISPLAY' 2>/dev/null)
-        if [ -n "\$DISPLAY_VAL" ]; then
-            break
-        fi
-        
-        # Check for X11 socket
-        if [ -e "/tmp/.X11-unix/X0" ]; then
-            DISPLAY_VAL=":0"
-            break
-        fi
-        
-        sleep 1
-    done
-    
-    echo "\$DISPLAY_VAL"
-}
+chmod +x "$LAUNCHER_SCRIPT"
+chown "$ACTUAL_USER:$ACTUAL_USER" "$LAUNCHER_SCRIPT"
+echo -e "${GREEN}Created launcher at ${LAUNCHER_SCRIPT}${NC}"
 
-get_xauthority() {
-    # Try standard location first
-    if [ -f "\${USER_HOME}/.Xauthority" ]; then
-        echo "\${USER_HOME}/.Xauthority"
-        return
-    fi
-    
-    # Search in runtime dir
-    XAUTH=\$(find /run/user/\${USER_ID} -name 'xauth_*' 2>/dev/null | head -1)
-    if [ -n "\$XAUTH" ]; then
-        echo "\$XAUTH"
-        return
-    fi
-    
-    # Search in tmp
-    XAUTH=\$(find /tmp -maxdepth 1 -name 'xauth_*' -user "\$USER_NAME" 2>/dev/null | head -1)
-    if [ -n "\$XAUTH" ]; then
-        echo "\$XAUTH"
-        return
-    fi
-}
+# Step 3: Create autostart desktop entry
+echo -e "${GREEN}Step 3: Creating autostart entry...${NC}"
 
-start() {
-    echo "Starting hope-terminal..."
-    
-    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
-        echo "hope-terminal is already running"
-        return 1
-    fi
-    
-    # Get display environment
-    DISPLAY_VAL=\$(get_display_env)
-    XAUTHORITY_VAL=\$(get_xauthority)
-    
-    if [ -z "\$DISPLAY_VAL" ]; then
-        echo "Warning: Could not detect DISPLAY, using :0"
-        DISPLAY_VAL=":0"
-    fi
-    
-    echo "Using DISPLAY=\$DISPLAY_VAL"
-    echo "Using XAUTHORITY=\$XAUTHORITY_VAL"
-    
-    # Set up environment and run
-    (
-        export DISPLAY="\$DISPLAY_VAL"
-        export XAUTHORITY="\$XAUTHORITY_VAL"
-        export XDG_RUNTIME_DIR="/run/user/\${USER_ID}"
-        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/\${USER_ID}/bus"
-        export WAYLAND_DISPLAY="wayland-0"
-        export HOME="\$USER_HOME"
-        
-        cd "\$SCRIPT_DIR"
-        nohup "\$BUN_PATH" run src/index.ts -- "\$USER_COMMAND" >> "\$LOGFILE" 2>&1 &
-        echo \$! > "\$PIDFILE"
-    )
-    
-    sleep 1
-    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
-        echo "hope-terminal started with PID \$(cat \$PIDFILE)"
-    else
-        echo "Failed to start hope-terminal"
-        return 1
-    fi
-}
+AUTOSTART_DIR="${ACTUAL_USER_HOME}/.config/autostart"
+mkdir -p "$AUTOSTART_DIR"
+chown "$ACTUAL_USER:$ACTUAL_USER" "$AUTOSTART_DIR"
 
-stop() {
-    echo "Stopping hope-terminal..."
-    
-    if [ ! -f "\$PIDFILE" ]; then
-        echo "hope-terminal is not running (no pidfile)"
-        return 0
-    fi
-    
-    PID=\$(cat "\$PIDFILE")
-    
-    if ! kill -0 "\$PID" 2>/dev/null; then
-        echo "hope-terminal is not running (stale pidfile)"
-        rm -f "\$PIDFILE"
-        return 0
-    fi
-    
-    kill "\$PID"
-    
-    # Wait for process to stop
-    for i in \$(seq 1 10); do
-        if ! kill -0 "\$PID" 2>/dev/null; then
-            break
-        fi
-        sleep 1
-    done
-    
-    # Force kill if still running
-    if kill -0 "\$PID" 2>/dev/null; then
-        echo "Force killing..."
-        kill -9 "\$PID"
-    fi
-    
-    rm -f "\$PIDFILE"
-    echo "hope-terminal stopped"
-}
+DESKTOP_FILE="${AUTOSTART_DIR}/hope-terminal.desktop"
+cat > "$DESKTOP_FILE" << EOF
+[Desktop Entry]
+Type=Application
+Name=Hope Terminal
+Comment=Kiosk Display Manager with Power-Off Handling
+Exec=${LAUNCHER_SCRIPT}
+Terminal=false
+Hidden=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=5
+EOF
 
-status() {
-    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
-        echo "hope-terminal is running with PID \$(cat \$PIDFILE)"
-        return 0
-    else
-        echo "hope-terminal is not running"
-        return 1
-    fi
-}
+chown "$ACTUAL_USER:$ACTUAL_USER" "$DESKTOP_FILE"
+echo -e "${GREEN}Created autostart entry at ${DESKTOP_FILE}${NC}"
 
-case "\$1" in
-    start)
-        start
-        ;;
-    stop)
-        stop
-        ;;
-    restart)
-        stop
-        sleep 2
-        start
-        ;;
-    status)
-        status
-        ;;
-    *)
-        echo "Usage: \$0 {start|stop|restart|status}"
-        exit 1
-        ;;
-esac
+# Step 4: Create systemd user service (alternative method)
+echo -e "${GREEN}Step 4: Creating systemd user service (alternative)...${NC}"
 
-exit 0
-INITEOF
+SYSTEMD_USER_DIR="${ACTUAL_USER_HOME}/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+chown -R "$ACTUAL_USER:$ACTUAL_USER" "${ACTUAL_USER_HOME}/.config/systemd"
 
-chmod 755 "$INIT_SCRIPT"
-echo -e "${GREEN}Init script created at ${INIT_SCRIPT}${NC}"
+SYSTEMD_SERVICE="${SYSTEMD_USER_DIR}/hope-terminal.service"
+cat > "$SYSTEMD_SERVICE" << EOF
+[Unit]
+Description=Hope Terminal Kiosk Manager
+After=graphical-session.target
 
-# Create symbolic links for runlevels 2-5
-echo -e "${GREEN}Creating runlevel symlinks...${NC}"
-for rl in 2 3 4 5; do
-    ln -sf "$INIT_SCRIPT" "/etc/rc${rl}.d/S99${SERVICE_NAME}"
-done
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${LAUNCHER_SCRIPT}
+Restart=on-failure
+RestartSec=10
 
-# Create stop links for runlevels 0, 1, 6
-for rl in 0 1 6; do
-    ln -sf "$INIT_SCRIPT" "/etc/rc${rl}.d/K01${SERVICE_NAME}"
-done
+[Install]
+WantedBy=graphical-session.target
+EOF
+
+chown "$ACTUAL_USER:$ACTUAL_USER" "$SYSTEMD_SERVICE"
+echo -e "${GREEN}Created systemd user service at ${SYSTEMD_SERVICE}${NC}"
+
+# Enable the systemd user service
+echo -e "${GREEN}Enabling systemd user service...${NC}"
+su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" || true
+su - "$ACTUAL_USER" -c "systemctl --user enable hope-terminal.service" || true
 
 echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "To start the service now:  ${YELLOW}sudo /etc/init.d/${SERVICE_NAME} start${NC}"
-echo -e "To check status:           ${YELLOW}sudo /etc/init.d/${SERVICE_NAME} status${NC}"
-echo -e "To view logs:              ${YELLOW}sudo tail -f /var/log/${SERVICE_NAME}.log${NC}"
-echo -e "To uninstall:              ${YELLOW}sudo ./uninstall.sh${NC}"
+echo -e "The service will start automatically on login."
+echo
+echo -e "To start now (choose one):"
+echo -e "  ${YELLOW}${LAUNCHER_SCRIPT}${NC}"
+echo -e "  ${YELLOW}systemctl --user start hope-terminal${NC}"
+echo
+echo -e "To check status:"
+echo -e "  ${YELLOW}systemctl --user status hope-terminal${NC}"
+echo
+echo -e "To view logs:"
+echo -e "  ${YELLOW}journalctl --user -u hope-terminal -f${NC}"
+echo
+echo -e "To uninstall:"
+echo -e "  ${YELLOW}sudo ./uninstall.sh${NC}"
 echo
