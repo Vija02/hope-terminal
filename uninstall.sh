@@ -1,11 +1,11 @@
 #!/bin/bash
 # Hope Terminal - Uninstall Script
-# This script removes the hope-terminal systemd service
+# This script removes the hope-terminal init.d service
 
 set -e
 
 SERVICE_NAME="hope-terminal"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -25,24 +25,27 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Check if service exists
-if [ ! -f "$SERVICE_FILE" ]; then
+if [ ! -f "$INIT_SCRIPT" ]; then
     echo -e "${YELLOW}Service is not installed.${NC}"
     exit 0
 fi
 
 # Stop the service if running
 echo -e "${GREEN}Stopping service...${NC}"
-systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+"$INIT_SCRIPT" stop 2>/dev/null || true
 
-# Disable the service
-echo -e "${GREEN}Disabling service...${NC}"
-systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+# Remove runlevel symlinks
+echo -e "${GREEN}Removing runlevel symlinks...${NC}"
+for rl in 0 1 2 3 4 5 6; do
+    rm -f "/etc/rc${rl}.d/S99${SERVICE_NAME}"
+    rm -f "/etc/rc${rl}.d/K01${SERVICE_NAME}"
+done
 
-# Remove the service file
-echo -e "${GREEN}Removing service file...${NC}"
-rm -f "$SERVICE_FILE"
+# Remove the init script
+echo -e "${GREEN}Removing init script...${NC}"
+rm -f "$INIT_SCRIPT"
 
-# Remove the wrapper script
+# Remove wrapper script if exists
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER_SCRIPT="${SCRIPT_DIR}/run-service.sh"
 if [ -f "$WRAPPER_SCRIPT" ]; then
@@ -50,9 +53,9 @@ if [ -f "$WRAPPER_SCRIPT" ]; then
     rm -f "$WRAPPER_SCRIPT"
 fi
 
-# Reload systemd
-echo -e "${GREEN}Reloading systemd...${NC}"
-systemctl daemon-reload
+# Remove pidfile and logfile
+rm -f /var/run/hope-terminal.pid
+echo -e "${YELLOW}Note: Log file kept at /var/log/hope-terminal.log${NC}"
 
 echo
 echo -e "${GREEN}========================================${NC}"

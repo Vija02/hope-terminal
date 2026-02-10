@@ -1,11 +1,11 @@
 #!/bin/bash
 # Hope Terminal - Install Script
-# This script installs hope-terminal as a systemd service running as root
+# This script installs hope-terminal as an init.d service
 
 set -e
 
 SERVICE_NAME="hope-terminal"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for output
@@ -74,117 +74,207 @@ echo
 echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
 echo
 
-# Create the systemd service file
-echo -e "${GREEN}Creating systemd service...${NC}"
+# Create the init.d script
+echo -e "${GREEN}Creating init.d script...${NC}"
 
-# Create a wrapper script that sets up the environment
-WRAPPER_SCRIPT="${SCRIPT_DIR}/run-service.sh"
-
-cat > "$WRAPPER_SCRIPT" << 'WRAPPER_EOF'
+cat > "$INIT_SCRIPT" << INITEOF
 #!/bin/bash
-# This script sets up the environment for hope-terminal when running as a service
+### BEGIN INIT INFO
+# Provides:          hope-terminal
+# Required-Start:    \$local_fs \$remote_fs \$syslog
+# Required-Stop:     \$local_fs \$remote_fs \$syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Hope Terminal Kiosk Manager
+# Description:       Manages kiosk display with power-off handling
+### END INIT INFO
 
-USER_ID="__USER_ID__"
-USER_HOME="__USER_HOME__"
-SCRIPT_DIR="__SCRIPT_DIR__"
-BUN_PATH="__BUN_PATH__"
-USER_COMMAND="__USER_COMMAND__"
+USER_ID="${ACTUAL_USER_ID}"
+USER_NAME="${ACTUAL_USER}"
+USER_HOME="${ACTUAL_USER_HOME}"
+SCRIPT_DIR="${SCRIPT_DIR}"
+BUN_PATH="${BUN_PATH}"
+USER_COMMAND="${USER_COMMAND}"
+PIDFILE="/var/run/hope-terminal.pid"
+LOGFILE="/var/log/hope-terminal.log"
 
-# Wait for display to be available
-for i in {1..60}; do
-    # Check for Wayland
-    if [ -e "/run/user/${USER_ID}/wayland-0" ]; then
-        export WAYLAND_DISPLAY=wayland-0
-        break
+get_display_env() {
+    # Wait for display to be available (max 60 seconds)
+    for i in \$(seq 1 60); do
+        # Try to find DISPLAY from the user's session
+        DISPLAY_VAL=\$(su - "\$USER_NAME" -c 'echo \$DISPLAY' 2>/dev/null)
+        if [ -n "\$DISPLAY_VAL" ]; then
+            break
+        fi
+        
+        # Check for X11 socket
+        if [ -e "/tmp/.X11-unix/X0" ]; then
+            DISPLAY_VAL=":0"
+            break
+        fi
+        
+        sleep 1
+    done
+    
+    echo "\$DISPLAY_VAL"
+}
+
+get_xauthority() {
+    # Try standard location first
+    if [ -f "\${USER_HOME}/.Xauthority" ]; then
+        echo "\${USER_HOME}/.Xauthority"
+        return
     fi
-    # Check for X11
-    if [ -e "/tmp/.X11-unix/X0" ]; then
-        export DISPLAY=:0
-        break
+    
+    # Search in runtime dir
+    XAUTH=\$(find /run/user/\${USER_ID} -name 'xauth_*' 2>/dev/null | head -1)
+    if [ -n "\$XAUTH" ]; then
+        echo "\$XAUTH"
+        return
     fi
+    
+    # Search in tmp
+    XAUTH=\$(find /tmp -maxdepth 1 -name 'xauth_*' -user "\$USER_NAME" 2>/dev/null | head -1)
+    if [ -n "\$XAUTH" ]; then
+        echo "\$XAUTH"
+        return
+    fi
+}
+
+start() {
+    echo "Starting hope-terminal..."
+    
+    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
+        echo "hope-terminal is already running"
+        return 1
+    fi
+    
+    # Get display environment
+    DISPLAY_VAL=\$(get_display_env)
+    XAUTHORITY_VAL=\$(get_xauthority)
+    
+    if [ -z "\$DISPLAY_VAL" ]; then
+        echo "Warning: Could not detect DISPLAY, using :0"
+        DISPLAY_VAL=":0"
+    fi
+    
+    echo "Using DISPLAY=\$DISPLAY_VAL"
+    echo "Using XAUTHORITY=\$XAUTHORITY_VAL"
+    
+    # Set up environment and run
+    (
+        export DISPLAY="\$DISPLAY_VAL"
+        export XAUTHORITY="\$XAUTHORITY_VAL"
+        export XDG_RUNTIME_DIR="/run/user/\${USER_ID}"
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/\${USER_ID}/bus"
+        export WAYLAND_DISPLAY="wayland-0"
+        export HOME="\$USER_HOME"
+        
+        cd "\$SCRIPT_DIR"
+        nohup "\$BUN_PATH" run src/index.ts -- "\$USER_COMMAND" >> "\$LOGFILE" 2>&1 &
+        echo \$! > "\$PIDFILE"
+    )
+    
     sleep 1
+    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
+        echo "hope-terminal started with PID \$(cat \$PIDFILE)"
+    else
+        echo "Failed to start hope-terminal"
+        return 1
+    fi
+}
+
+stop() {
+    echo "Stopping hope-terminal..."
+    
+    if [ ! -f "\$PIDFILE" ]; then
+        echo "hope-terminal is not running (no pidfile)"
+        return 0
+    fi
+    
+    PID=\$(cat "\$PIDFILE")
+    
+    if ! kill -0 "\$PID" 2>/dev/null; then
+        echo "hope-terminal is not running (stale pidfile)"
+        rm -f "\$PIDFILE"
+        return 0
+    fi
+    
+    kill "\$PID"
+    
+    # Wait for process to stop
+    for i in \$(seq 1 10); do
+        if ! kill -0 "\$PID" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    
+    # Force kill if still running
+    if kill -0 "\$PID" 2>/dev/null; then
+        echo "Force killing..."
+        kill -9 "\$PID"
+    fi
+    
+    rm -f "\$PIDFILE"
+    echo "hope-terminal stopped"
+}
+
+status() {
+    if [ -f "\$PIDFILE" ] && kill -0 \$(cat "\$PIDFILE") 2>/dev/null; then
+        echo "hope-terminal is running with PID \$(cat \$PIDFILE)"
+        return 0
+    else
+        echo "hope-terminal is not running"
+        return 1
+    fi
+}
+
+case "\$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 2
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: \$0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0
+INITEOF
+
+chmod 755 "$INIT_SCRIPT"
+echo -e "${GREEN}Init script created at ${INIT_SCRIPT}${NC}"
+
+# Create symbolic links for runlevels 2-5
+echo -e "${GREEN}Creating runlevel symlinks...${NC}"
+for rl in 2 3 4 5; do
+    ln -sf "$INIT_SCRIPT" "/etc/rc${rl}.d/S99${SERVICE_NAME}"
 done
 
-# Set up environment
-export XDG_RUNTIME_DIR="/run/user/${USER_ID}"
-export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${USER_ID}/bus"
-export DISPLAY=:0
-export WAYLAND_DISPLAY=wayland-0
-
-# Find XAUTHORITY - needed for xrandr to work
-if [ -f "${USER_HOME}/.Xauthority" ]; then
-    export XAUTHORITY="${USER_HOME}/.Xauthority"
-else
-    # Try to find it in /run/user
-    XAUTH_FILE=$(find /run/user/${USER_ID} -name 'xauth_*' -o -name '.Xauthority' 2>/dev/null | head -1)
-    if [ -n "$XAUTH_FILE" ]; then
-        export XAUTHORITY="$XAUTH_FILE"
-    fi
-fi
-
-# Give the graphical session a moment to fully initialize
-sleep 3
-
-cd "$SCRIPT_DIR"
-exec "$BUN_PATH" run src/index.ts -- "$USER_COMMAND"
-WRAPPER_EOF
-
-# Replace placeholders in wrapper script
-sed -i "s|__USER_ID__|${ACTUAL_USER_ID}|g" "$WRAPPER_SCRIPT"
-sed -i "s|__USER_HOME__|${ACTUAL_USER_HOME}|g" "$WRAPPER_SCRIPT"
-sed -i "s|__SCRIPT_DIR__|${SCRIPT_DIR}|g" "$WRAPPER_SCRIPT"
-sed -i "s|__BUN_PATH__|${BUN_PATH}|g" "$WRAPPER_SCRIPT"
-sed -i "s|__USER_COMMAND__|${USER_COMMAND}|g" "$WRAPPER_SCRIPT"
-
-chmod +x "$WRAPPER_SCRIPT"
-echo -e "${GREEN}Created wrapper script at ${WRAPPER_SCRIPT}${NC}"
-
-cat > "$SERVICE_FILE" << EOF
-[Unit]
-Description=Hope Terminal Kiosk Manager
-After=graphical.target
-Wants=graphical.target
-
-[Service]
-Type=simple
-User=root
-
-# Working directory
-WorkingDirectory=${SCRIPT_DIR}
-
-# The command to run (via wrapper script that sets up environment)
-ExecStart=${WRAPPER_SCRIPT}
-
-# Restart on failure
-Restart=on-failure
-RestartSec=10
-
-# Logging
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${SERVICE_NAME}
-
-[Install]
-WantedBy=graphical.target
-EOF
-
-echo -e "${GREEN}Service file created at ${SERVICE_FILE}${NC}"
-
-# Reload systemd
-echo -e "${GREEN}Reloading systemd...${NC}"
-systemctl daemon-reload
-
-# Enable the service
-echo -e "${GREEN}Enabling service...${NC}"
-systemctl enable "$SERVICE_NAME"
+# Create stop links for runlevels 0, 1, 6
+for rl in 0 1 6; do
+    ln -sf "$INIT_SCRIPT" "/etc/rc${rl}.d/K01${SERVICE_NAME}"
+done
 
 echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "To start the service now:  ${YELLOW}sudo systemctl start ${SERVICE_NAME}${NC}"
-echo -e "To check status:           ${YELLOW}sudo systemctl status ${SERVICE_NAME}${NC}"
-echo -e "To view logs:              ${YELLOW}sudo journalctl -u ${SERVICE_NAME} -f${NC}"
+echo -e "To start the service now:  ${YELLOW}sudo /etc/init.d/${SERVICE_NAME} start${NC}"
+echo -e "To check status:           ${YELLOW}sudo /etc/init.d/${SERVICE_NAME} status${NC}"
+echo -e "To view logs:              ${YELLOW}sudo tail -f /var/log/${SERVICE_NAME}.log${NC}"
 echo -e "To uninstall:              ${YELLOW}sudo ./uninstall.sh${NC}"
 echo
