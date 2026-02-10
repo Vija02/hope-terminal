@@ -13,15 +13,20 @@
 //    - Closes the browser
 //    - Shuts down the laptop
 
-import { findSecondaryScreen } from "./screen-detect.ts";
+import { findSecondaryScreen, type ScreenInfo } from "./screen-detect.ts";
 import { launchBrowser, type BrowserInstance } from "./browser.ts";
 import { startProcess, type ManagedProcess } from "./process-manager.ts";
 import { startPowerMonitor } from "./power-monitor.ts";
+
+// Screen detection interval (5 seconds)
+const SCREEN_DETECT_INTERVAL_MS = 5000;
 
 // State
 let browser: BrowserInstance | null = null;
 let managedProcess: ManagedProcess | null = null;
 let isShuttingDown = false;
+let currentScreenName: string | null = null;
+let screenMonitorInterval: Timer | null = null;
 
 /**
  * Parse command line arguments
@@ -102,6 +107,61 @@ async function handlePowerDisconnect(): Promise<void> {
 }
 
 /**
+ * Start continuous screen monitoring
+ * Launches browser when secondary screen is detected, closes when disconnected
+ */
+function startScreenMonitor(): void {
+  console.log(`[Main] Starting screen monitor (checking every ${SCREEN_DETECT_INTERVAL_MS / 1000}s)...`);
+  
+  screenMonitorInterval = setInterval(async () => {
+    if (isShuttingDown) {
+      return;
+    }
+    
+    const secondaryScreen = await findSecondaryScreen();
+    
+    // Screen connected
+    if (secondaryScreen && !browser) {
+      console.log(`\n[Main] Secondary screen detected: ${secondaryScreen.name}`);
+      currentScreenName = secondaryScreen.name;
+      browser = await launchBrowser(secondaryScreen);
+      
+      if (!browser) {
+        console.warn("[Main] Failed to launch browser on newly detected screen");
+      }
+    }
+    // Screen disconnected
+    else if (!secondaryScreen && browser) {
+      console.log(`\n[Main] Secondary screen disconnected (was: ${currentScreenName})`);
+      await browser.close();
+      browser = null;
+      currentScreenName = null;
+    }
+    // Screen changed (different screen connected)
+    else if (secondaryScreen && browser && secondaryScreen.name !== currentScreenName) {
+      console.log(`\n[Main] Screen changed from ${currentScreenName} to ${secondaryScreen.name}`);
+      await browser.close();
+      currentScreenName = secondaryScreen.name;
+      browser = await launchBrowser(secondaryScreen);
+      
+      if (!browser) {
+        console.warn("[Main] Failed to launch browser on new screen");
+      }
+    }
+  }, SCREEN_DETECT_INTERVAL_MS);
+}
+
+/**
+ * Stop screen monitoring
+ */
+function stopScreenMonitor(): void {
+  if (screenMonitorInterval) {
+    clearInterval(screenMonitorInterval);
+    screenMonitorInterval = null;
+  }
+}
+
+/**
  * Handle manual termination (Ctrl+C on this script)
  */
 async function handleManualTermination(): Promise<void> {
@@ -112,6 +172,9 @@ async function handleManualTermination(): Promise<void> {
   
   isShuttingDown = true;
   console.log("\n[Main] Received termination signal, cleaning up...");
+  
+  // Stop screen monitoring
+  stopScreenMonitor();
   
   // Stop the managed process
   if (managedProcess && managedProcess.isRunning()) {
@@ -150,21 +213,25 @@ async function main(): Promise<void> {
   process.on("SIGINT", handleManualTermination);
   process.on("SIGTERM", handleManualTermination);
   
-  // Step 1: Detect secondary screen
+  // Step 1: Initial screen detection
   console.log("[Main] Step 1: Detecting screens...");
   const secondaryScreen = await findSecondaryScreen();
   
-  // Step 2: Launch browser on secondary screen (if found)
+  // Step 2: Launch browser on secondary screen (if found) and start monitoring
   if (secondaryScreen) {
     console.log("\n[Main] Step 2: Launching browser on secondary screen...");
+    currentScreenName = secondaryScreen.name;
     browser = await launchBrowser(secondaryScreen);
     
     if (!browser) {
-      console.warn("[Main] Failed to launch browser, continuing without it");
+      console.warn("[Main] Failed to launch browser, will retry when screen is detected");
     }
   } else {
-    console.log("\n[Main] Step 2: No secondary screen found, skipping browser launch");
+    console.log("\n[Main] Step 2: No secondary screen found, will monitor for connection");
   }
+  
+  // Start continuous screen monitoring
+  startScreenMonitor();
   
   // Step 3: Start user command (simultaneously with browser)
   console.log("\n[Main] Step 3: Starting user command...");
@@ -213,6 +280,7 @@ async function main(): Promise<void> {
   
   // Clean up when loop exits
   powerMonitor.stop();
+  stopScreenMonitor();
   
   if (browser) {
     await browser.close();
