@@ -236,6 +236,7 @@ export async function launchBrowser(screen: ScreenInfo): Promise<BrowserInstance
   console.log(`[Browser] Profile: ${PROFILE_DIR}`);
   console.log(`[Browser] Position: ${screen.xOffset},${screen.yOffset}, Size: ${screen.width}x${screen.height}`);
   console.log(`[Browser] URL: ${TARGET_URL}`);
+  console.log(`[Browser] Command: ${args.join(" ")}`);
   
   // Set environment to position Firefox on the correct screen
   const env = {
