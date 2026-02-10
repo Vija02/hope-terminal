@@ -182,22 +182,43 @@ async function main(): Promise<void> {
   console.log("  Power disconnect will trigger shutdown");
   console.log("========================================\n");
   
-  // Wait for the managed process to exit
-  await managedProcess.process.exited;
+  // Auto-restart loop
+  const RESTART_DELAY_MS = 5000;
   
-  const exitCode = managedProcess.getExitCode();
-  console.log(`\n[Main] User command exited with code ${exitCode}`);
-  
-  // If process exits on its own (not from power disconnect), clean up
-  if (!isShuttingDown) {
-    powerMonitor.stop();
+  while (!isShuttingDown) {
+    // Wait for the managed process to exit
+    await managedProcess.process.exited;
     
-    if (browser) {
-      await browser.close();
+    const exitCode = managedProcess.getExitCode();
+    console.log(`\n[Main] User command exited with code ${exitCode}`);
+    
+    // If we're shutting down, don't restart
+    if (isShuttingDown) {
+      break;
     }
     
-    process.exit(exitCode ?? 0);
+    // Wait before restarting
+    console.log(`[Main] Restarting command in ${RESTART_DELAY_MS / 1000} seconds...`);
+    await new Promise((resolve) => setTimeout(resolve, RESTART_DELAY_MS));
+    
+    // Check again after the delay
+    if (isShuttingDown) {
+      break;
+    }
+    
+    // Restart the process
+    console.log("[Main] Restarting user command...");
+    managedProcess = startProcess(command);
   }
+  
+  // Clean up when loop exits
+  powerMonitor.stop();
+  
+  if (browser) {
+    await browser.close();
+  }
+  
+  process.exit(managedProcess?.getExitCode() ?? 0);
 }
 
 // Run
