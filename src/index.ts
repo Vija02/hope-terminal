@@ -1,0 +1,207 @@
+// Hope Terminal - Kiosk Display Manager with Power-Off Handling
+//
+// Usage: bun run src/index.ts -- "command to run"
+//
+// This program:
+// 1. Detects secondary screen using xrandr
+// 2. Opens Chromium in kiosk mode on secondary screen (if found)
+// 3. Starts the provided command simultaneously
+// 4. Monitors AC power status
+// 5. When power is disconnected:
+//    - Sends SIGINT to the command
+//    - Waits up to 5 minutes for graceful exit
+//    - Closes the browser
+//    - Shuts down the laptop
+
+import { findSecondaryScreen } from "./screen-detect.ts";
+import { launchBrowser, type BrowserInstance } from "./browser.ts";
+import { startProcess, type ManagedProcess } from "./process-manager.ts";
+import { startPowerMonitor } from "./power-monitor.ts";
+
+// State
+let browser: BrowserInstance | null = null;
+let managedProcess: ManagedProcess | null = null;
+let isShuttingDown = false;
+
+/**
+ * Parse command line arguments
+ */
+function getCommand(): string | null {
+  // bun run src/index.ts -- "command"
+  // argv: [bun, src/index.ts, --, command]
+  const args = process.argv.slice(2);
+  
+  // Find everything after --
+  const dashDashIndex = args.indexOf("--");
+  if (dashDashIndex !== -1 && dashDashIndex + 1 < args.length) {
+    return args.slice(dashDashIndex + 1).join(" ");
+  }
+  
+  // Or just take the first argument if no --
+  if (args.length > 0 && args[0] !== "--") {
+    return args.join(" ");
+  }
+  
+  return null;
+}
+
+/**
+ * Execute system shutdown
+ */
+async function executeShutdown(): Promise<void> {
+  console.log("\n[Main] Executing system shutdown...");
+  
+  try {
+    const proc = Bun.spawn(["sudo", "shutdown", "now"], {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    
+    await proc.exited;
+  } catch (error) {
+    console.error("[Main] Shutdown failed:", error);
+    console.error("[Main] You may need to configure passwordless sudo for shutdown");
+    console.error("[Main] Add to /etc/sudoers: %sudo ALL=(ALL) NOPASSWD: /sbin/shutdown");
+  }
+}
+
+/**
+ * Handle power disconnect - graceful shutdown sequence
+ */
+async function handlePowerDisconnect(): Promise<void> {
+  if (isShuttingDown) {
+    console.log("[Main] Already shutting down, ignoring...");
+    return;
+  }
+  
+  isShuttingDown = true;
+  
+  console.log("\n========================================");
+  console.log("  POWER DISCONNECTED - SHUTTING DOWN");
+  console.log("========================================\n");
+  
+  // 1. Send SIGINT to command and wait for graceful exit
+  if (managedProcess && managedProcess.isRunning()) {
+    console.log("[Main] Step 1: Stopping user command gracefully...");
+    await managedProcess.gracefulStop();
+  } else {
+    console.log("[Main] Step 1: No running command to stop");
+  }
+  
+  // 2. Close browser
+  if (browser) {
+    console.log("[Main] Step 2: Closing browser...");
+    await browser.close();
+  } else {
+    console.log("[Main] Step 2: No browser to close");
+  }
+  
+  // 3. Shutdown the system
+  console.log("[Main] Step 3: Shutting down system...");
+  await executeShutdown();
+}
+
+/**
+ * Handle manual termination (Ctrl+C on this script)
+ */
+async function handleManualTermination(): Promise<void> {
+  if (isShuttingDown) {
+    console.log("\n[Main] Force exiting...");
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  console.log("\n[Main] Received termination signal, cleaning up...");
+  
+  // Stop the managed process
+  if (managedProcess && managedProcess.isRunning()) {
+    await managedProcess.gracefulStop();
+  }
+  
+  // Close browser
+  if (browser) {
+    await browser.close();
+  }
+  
+  console.log("[Main] Cleanup complete, exiting");
+  process.exit(0);
+}
+
+/**
+ * Main entry point
+ */
+async function main(): Promise<void> {
+  console.log("========================================");
+  console.log("     Hope Terminal - Kiosk Manager");
+  console.log("========================================\n");
+  
+  // Parse command
+  const command = getCommand();
+  
+  if (!command) {
+    console.error("Usage: bun run src/index.ts -- \"command to run\"");
+    console.error("Example: bun run src/index.ts -- \"node server.js\"");
+    process.exit(1);
+  }
+  
+  console.log(`[Main] Command to run: ${command}\n`);
+  
+  // Set up signal handlers
+  process.on("SIGINT", handleManualTermination);
+  process.on("SIGTERM", handleManualTermination);
+  
+  // Step 1: Detect secondary screen
+  console.log("[Main] Step 1: Detecting screens...");
+  const secondaryScreen = await findSecondaryScreen();
+  
+  // Step 2: Launch browser on secondary screen (if found)
+  if (secondaryScreen) {
+    console.log("\n[Main] Step 2: Launching browser on secondary screen...");
+    browser = await launchBrowser(secondaryScreen);
+    
+    if (!browser) {
+      console.warn("[Main] Failed to launch browser, continuing without it");
+    }
+  } else {
+    console.log("\n[Main] Step 2: No secondary screen found, skipping browser launch");
+  }
+  
+  // Step 3: Start user command (simultaneously with browser)
+  console.log("\n[Main] Step 3: Starting user command...");
+  managedProcess = startProcess(command);
+  
+  // Step 4: Start power monitoring
+  console.log("\n[Main] Step 4: Starting power monitor...");
+  const powerMonitor = await startPowerMonitor({
+    pollInterval: 2000,
+    onPowerDisconnect: handlePowerDisconnect,
+  });
+  
+  console.log("\n========================================");
+  console.log("  System running - Press Ctrl+C to stop");
+  console.log("  Power disconnect will trigger shutdown");
+  console.log("========================================\n");
+  
+  // Wait for the managed process to exit
+  await managedProcess.process.exited;
+  
+  const exitCode = managedProcess.getExitCode();
+  console.log(`\n[Main] User command exited with code ${exitCode}`);
+  
+  // If process exits on its own (not from power disconnect), clean up
+  if (!isShuttingDown) {
+    powerMonitor.stop();
+    
+    if (browser) {
+      await browser.close();
+    }
+    
+    process.exit(exitCode ?? 0);
+  }
+}
+
+// Run
+main().catch((error) => {
+  console.error("[Main] Fatal error:", error);
+  process.exit(1);
+});
