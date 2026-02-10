@@ -42,6 +42,14 @@ systemctl disable "$SERVICE_NAME" 2>/dev/null || true
 echo -e "${GREEN}Removing service file...${NC}"
 rm -f "$SERVICE_FILE"
 
+# Remove the wrapper script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WRAPPER_SCRIPT="${SCRIPT_DIR}/run-service.sh"
+if [ -f "$WRAPPER_SCRIPT" ]; then
+    echo -e "${GREEN}Removing wrapper script...${NC}"
+    rm -f "$WRAPPER_SCRIPT"
+fi
+
 # Reload systemd
 echo -e "${GREEN}Reloading systemd...${NC}"
 systemctl daemon-reload

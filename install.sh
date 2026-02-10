@@ -77,30 +77,83 @@ echo
 # Create the systemd service file
 echo -e "${GREEN}Creating systemd service...${NC}"
 
+# Create a wrapper script that sets up the environment
+WRAPPER_SCRIPT="${SCRIPT_DIR}/run-service.sh"
+
+cat > "$WRAPPER_SCRIPT" << 'WRAPPER_EOF'
+#!/bin/bash
+# This script sets up the environment for hope-terminal when running as a service
+
+USER_ID="__USER_ID__"
+USER_HOME="__USER_HOME__"
+SCRIPT_DIR="__SCRIPT_DIR__"
+BUN_PATH="__BUN_PATH__"
+USER_COMMAND="__USER_COMMAND__"
+
+# Wait for display to be available
+for i in {1..60}; do
+    # Check for Wayland
+    if [ -e "/run/user/${USER_ID}/wayland-0" ]; then
+        export WAYLAND_DISPLAY=wayland-0
+        break
+    fi
+    # Check for X11
+    if [ -e "/tmp/.X11-unix/X0" ]; then
+        export DISPLAY=:0
+        break
+    fi
+    sleep 1
+done
+
+# Set up environment
+export XDG_RUNTIME_DIR="/run/user/${USER_ID}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${USER_ID}/bus"
+export DISPLAY=:0
+export WAYLAND_DISPLAY=wayland-0
+
+# Find XAUTHORITY - needed for xrandr to work
+if [ -f "${USER_HOME}/.Xauthority" ]; then
+    export XAUTHORITY="${USER_HOME}/.Xauthority"
+else
+    # Try to find it in /run/user
+    XAUTH_FILE=$(find /run/user/${USER_ID} -name 'xauth_*' -o -name '.Xauthority' 2>/dev/null | head -1)
+    if [ -n "$XAUTH_FILE" ]; then
+        export XAUTHORITY="$XAUTH_FILE"
+    fi
+fi
+
+# Give the graphical session a moment to fully initialize
+sleep 3
+
+cd "$SCRIPT_DIR"
+exec "$BUN_PATH" run src/index.ts -- "$USER_COMMAND"
+WRAPPER_EOF
+
+# Replace placeholders in wrapper script
+sed -i "s|__USER_ID__|${ACTUAL_USER_ID}|g" "$WRAPPER_SCRIPT"
+sed -i "s|__USER_HOME__|${ACTUAL_USER_HOME}|g" "$WRAPPER_SCRIPT"
+sed -i "s|__SCRIPT_DIR__|${SCRIPT_DIR}|g" "$WRAPPER_SCRIPT"
+sed -i "s|__BUN_PATH__|${BUN_PATH}|g" "$WRAPPER_SCRIPT"
+sed -i "s|__USER_COMMAND__|${USER_COMMAND}|g" "$WRAPPER_SCRIPT"
+
+chmod +x "$WRAPPER_SCRIPT"
+echo -e "${GREEN}Created wrapper script at ${WRAPPER_SCRIPT}${NC}"
+
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Hope Terminal Kiosk Manager
-After=graphical-session.target
-Wants=graphical-session.target
+After=graphical.target
+Wants=graphical.target
 
 [Service]
 Type=simple
 User=root
 
-# Wait for graphical session to be ready
-ExecStartPre=/bin/bash -c 'until [ -n "\$(ls /run/user/${ACTUAL_USER_ID}/wayland-* 2>/dev/null || echo \$DISPLAY)" ]; do sleep 1; done; sleep 3'
-
-# Environment for display access
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-0
-Environment=XDG_RUNTIME_DIR=/run/user/${ACTUAL_USER_ID}
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${ACTUAL_USER_ID}/bus
-
 # Working directory
 WorkingDirectory=${SCRIPT_DIR}
 
-# The command to run
-ExecStart=${BUN_PATH} run src/index.ts -- "${USER_COMMAND}"
+# The command to run (via wrapper script that sets up environment)
+ExecStart=${WRAPPER_SCRIPT}
 
 # Restart on failure
 Restart=on-failure
