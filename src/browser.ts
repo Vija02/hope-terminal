@@ -118,9 +118,100 @@ export interface BrowserInstance {
 }
 
 /**
- * Move Firefox window to the specified screen using wmctrl
+ * Move Firefox window to the specified screen using GNOME D-Bus (Wayland compatible)
  */
 async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
+	// Check if we're on Wayland
+	const isWayland = process.env.XDG_SESSION_TYPE === "wayland" || process.env.WAYLAND_DISPLAY;
+	
+	if (isWayland) {
+		console.log("[Browser] Wayland detected, using gdbus to move window...");
+		return await moveWindowGnomeWayland(screen);
+	} else {
+		console.log("[Browser] X11 detected, using wmctrl to move window...");
+		return await moveWindowX11(screen);
+	}
+}
+
+/**
+ * Move window on GNOME Wayland using gdbus and the GNOME Shell evaluation interface
+ */
+async function moveWindowGnomeWayland(screen: ScreenInfo): Promise<boolean> {
+	try {
+		// Wait for window to be created
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+		
+		// Use gdbus to call GNOME Shell's Eval method to move the window
+		// This finds the Firefox window and moves it to the target monitor
+		const script = `
+			const start = Date.now();
+			(function() {
+				const start = Date.now();
+				const windows = global.get_window_actors();
+				for (let actor of windows) {
+					const win = actor.get_meta_window();
+					const title = win.get_title() || '';
+					const wmClass = win.get_wm_class() || '';
+					if (wmClass.toLowerCase().includes('firefox') || title.toLowerCase().includes('firefox')) {
+						// Find the monitor at the target position
+						const display = global.display;
+						const monitorManager = Meta.MonitorManager.get();
+						const nMonitors = display.get_n_monitors();
+						for (let i = 0; i < nMonitors; i++) {
+							const rect = display.get_monitor_geometry(i);
+							if (rect.x === ${screen.xOffset} && rect.y === ${screen.yOffset}) {
+								win.move_to_monitor(i);
+								win.make_fullscreen();
+								return 'Moved Firefox to monitor ' + i;
+							}
+						}
+						// Fallback: just try to find non-primary monitor
+						for (let i = 0; i < nMonitors; i++) {
+							if (i !== display.get_primary_monitor()) {
+								win.move_to_monitor(i);
+								win.make_fullscreen();
+								return 'Moved Firefox to non-primary monitor ' + i;
+							}
+						}
+						return 'Could not find target monitor';
+					}
+				}
+				return 'Firefox window not found (took ' + (Date.now() - start) + ' ms)';
+			})();
+		`.replace(/\n\t+/g, ' ').trim();
+		
+		const proc = Bun.spawn([
+			"gdbus", "call", "--session",
+			"--dest", "org.gnome.Shell",
+			"--object-path", "/org/gnome/Shell",
+			"--method", "org.gnome.Shell.Eval",
+			script
+		], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		
+		const output = await new Response(proc.stdout).text();
+		const stderr = await new Response(proc.stderr).text();
+		const exitCode = await proc.exited;
+		
+		if (exitCode !== 0) {
+			console.warn("[Browser] gdbus failed:", stderr);
+			return false;
+		}
+		
+		console.log(`[Browser] GNOME Shell eval result: ${output.trim()}`);
+		return output.includes("Moved Firefox");
+	} catch (error) {
+		console.error("[Browser] Failed to move window via GNOME D-Bus:", error);
+		return false;
+	}
+}
+
+/**
+ * Move window on X11 using wmctrl
+ */
+async function moveWindowX11(screen: ScreenInfo): Promise<boolean> {
 	try {
 		// Wait for window to be created
 		await new Promise((resolve) => setTimeout(resolve, 500))
@@ -257,11 +348,12 @@ export async function launchBrowser(
 	console.log(`[Browser] URL: ${TARGET_URL}`)
 	console.log(`[Browser] Command: ${args.join(" ")}`)
 
-	// Set environment to position Firefox on the correct screen
+	// Set environment variables
+	const isWayland = process.env.XDG_SESSION_TYPE === "wayland" || process.env.WAYLAND_DISPLAY;
 	const env = {
 		...process.env,
-		// Use DISPLAY with screen offset for X11
-		MOZ_USE_XINPUT2: "1",
+		// Enable Wayland for Firefox if on Wayland
+		...(isWayland ? { MOZ_ENABLE_WAYLAND: "1" } : { MOZ_USE_XINPUT2: "1" }),
 	}
 
 	const browserProcess = Bun.spawn(args, {
