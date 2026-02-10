@@ -118,14 +118,10 @@ export interface BrowserInstance {
 }
 
 /**
- * Move Firefox window to the specified screen using wmctrl (works with XWayland)
+ * Find Firefox window ID using wmctrl, with retries
  */
-async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
-	try {
-		// Wait for window to be created
-		await new Promise((resolve) => setTimeout(resolve, 500))
-
-		// Find Firefox window using wmctrl
+async function findFirefoxWindow(maxRetries: number = 10, retryDelayMs: number = 500): Promise<string | null> {
+	for (let attempt = 1; attempt <= maxRetries; attempt++) {
 		const listProc = Bun.spawn(["wmctrl", "-l"], {
 			stdout: "pipe",
 			stderr: "pipe",
@@ -143,15 +139,35 @@ async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
 				line.includes("theopenpresenter"),
 		)
 
-		if (!firefoxLine) {
-			console.warn("[Browser] Could not find Firefox window via wmctrl")
-			return false
+		if (firefoxLine) {
+			const windowId = firefoxLine.split(/\s+/)[0]
+			if (windowId) {
+				return windowId
+			}
 		}
 
-		// Extract window ID (first column)
-		const windowId = firefoxLine.split(/\s+/)[0]
+		if (attempt < maxRetries) {
+			console.log(`[Browser] Window not found yet, retrying... (${attempt}/${maxRetries})`)
+			await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+		}
+	}
+
+	return null
+}
+
+/**
+ * Move Firefox window to the specified screen using wmctrl (works with XWayland)
+ */
+async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
+	try {
+		// Wait for window to be created
+		await new Promise((resolve) => setTimeout(resolve, 1000))
+
+		// Find Firefox window with retries
+		const windowId = await findFirefoxWindow()
+
 		if (!windowId) {
-			console.warn("[Browser] Could not parse window ID")
+			console.warn("[Browser] Could not find Firefox window via wmctrl after retries")
 			return false
 		}
 
