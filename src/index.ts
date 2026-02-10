@@ -85,10 +85,14 @@ async function handlePowerDisconnect(): Promise<void> {
   console.log("  POWER DISCONNECTED - SHUTTING DOWN");
   console.log("========================================\n");
   
+  // Stop screen monitoring first
+  stopScreenMonitor();
+  
   // 1. Send SIGINT to command and wait for graceful exit
   if (managedProcess && managedProcess.isRunning()) {
     console.log("[Main] Step 1: Stopping user command gracefully...");
     await managedProcess.gracefulStop();
+    console.log("[Main] Step 1: User command stopped");
   } else {
     console.log("[Main] Step 1: No running command to stop");
   }
@@ -97,6 +101,8 @@ async function handlePowerDisconnect(): Promise<void> {
   if (browser) {
     console.log("[Main] Step 2: Closing browser...");
     await browser.close();
+    browser = null;
+    console.log("[Main] Step 2: Browser closed");
   } else {
     console.log("[Main] Step 2: No browser to close");
   }
@@ -104,6 +110,9 @@ async function handlePowerDisconnect(): Promise<void> {
   // 3. Shutdown the system
   console.log("[Main] Step 3: Shutting down system...");
   await executeShutdown();
+  
+  // If shutdown command didn't kill us, exit manually
+  process.exit(0);
 }
 
 /**
@@ -295,15 +304,20 @@ async function main(): Promise<void> {
     managedProcess = startProcess(command);
   }
   
-  // Clean up when loop exits
-  powerMonitor.stop();
-  stopScreenMonitor();
-  
-  if (browser) {
-    await browser.close();
+  // Clean up when loop exits (only if not already shutting down from power disconnect)
+  if (!isShuttingDown) {
+    powerMonitor.stop();
+    stopScreenMonitor();
+    
+    if (browser) {
+      await browser.close();
+    }
+    
+    process.exit(managedProcess?.getExitCode() ?? 0);
   }
   
-  process.exit(managedProcess?.getExitCode() ?? 0);
+  // If we're here due to shutdown, just wait (handlePowerDisconnect will handle exit)
+  powerMonitor.stop();
 }
 
 // Run
