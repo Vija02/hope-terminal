@@ -217,9 +217,23 @@ echo -e "${GREEN}Created clicker service at ${CLICKER_SERVICE}${NC}"
 
 # Enable the systemd user services
 echo -e "${GREEN}Enabling systemd user services...${NC}"
-su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" || true
-su - "$ACTUAL_USER" -c "systemctl --user enable hope-terminal.service" || true
-su - "$ACTUAL_USER" -c "systemctl --user enable hope-clicker.service" || true
+
+# Get the user's UID for the XDG_RUNTIME_DIR
+ACTUAL_USER_UID=$(id -u "$ACTUAL_USER")
+
+# systemctl --user requires access to the user's D-Bus session
+# We need to set XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS
+if [ -S "/run/user/${ACTUAL_USER_UID}/bus" ]; then
+    su - "$ACTUAL_USER" -c "XDG_RUNTIME_DIR=/run/user/${ACTUAL_USER_UID} systemctl --user daemon-reload" || true
+    su - "$ACTUAL_USER" -c "XDG_RUNTIME_DIR=/run/user/${ACTUAL_USER_UID} systemctl --user enable hope-terminal.service" || true
+    su - "$ACTUAL_USER" -c "XDG_RUNTIME_DIR=/run/user/${ACTUAL_USER_UID} systemctl --user enable hope-clicker.service" || true
+else
+    echo -e "${YELLOW}User session not running. Services will be enabled on next login.${NC}"
+    echo -e "${YELLOW}Run these commands after logging in as $ACTUAL_USER:${NC}"
+    echo -e "  systemctl --user daemon-reload"
+    echo -e "  systemctl --user enable hope-terminal.service"
+    echo -e "  systemctl --user enable hope-clicker.service"
+fi
 
 echo
 echo -e "${GREEN}========================================${NC}"
