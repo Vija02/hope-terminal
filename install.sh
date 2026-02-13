@@ -66,15 +66,25 @@ echo
 
 # Default command - pi-streamer
 PI_STREAMER_PATH="${SCRIPT_DIR}/../pi-streamer/src/index.ts"
-DEFAULT_COMMAND="STREAM_URL=https://recordings.michaelsalim.co.uk/stream ${BUN_PATH} run ${PI_STREAMER_PATH}"
+DEFAULT_COMMAND="${BUN_PATH} run ${PI_STREAMER_PATH}"
+DEFAULT_ENV="STREAM_URL=https://recordings.michaelsalim.co.uk/stream"
 
 # Ask for the command to run
 echo -e "Default command: ${YELLOW}${DEFAULT_COMMAND}${NC}"
 read -p "Enter the command to run (press Enter for default): " USER_COMMAND
 USER_COMMAND="${USER_COMMAND:-$DEFAULT_COMMAND}"
 
+echo -e "Default environment: ${YELLOW}${DEFAULT_ENV}${NC}"
+read -p "Enter environment variables (press Enter for default, 'none' for no env): " USER_ENV
+if [ "$USER_ENV" = "none" ]; then
+    USER_ENV=""
+else
+    USER_ENV="${USER_ENV:-$DEFAULT_ENV}"
+fi
+
 echo
 echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
+echo -e "${YELLOW}Environment:${NC} ${USER_ENV:-<none>}"
 echo
 
 # Step 1: Install required dependencies
@@ -123,11 +133,23 @@ echo -e "${GREEN}Created sudoers file at ${SUDOERS_FILE}${NC}"
 echo -e "${GREEN}Step 3: Creating launcher script...${NC}"
 
 LAUNCHER_SCRIPT="${SCRIPT_DIR}/run-hope-terminal.sh"
+
+# Build environment export lines
+ENV_EXPORTS=""
+if [ -n "$USER_ENV" ]; then
+    # Split by space and create export lines
+    for env_var in $USER_ENV; do
+        ENV_EXPORTS="${ENV_EXPORTS}export ${env_var}
+"
+    done
+fi
+
 cat > "$LAUNCHER_SCRIPT" << EOF
 #!/bin/bash
 # Hope Terminal Launcher Script
 
 cd "${SCRIPT_DIR}"
+${ENV_EXPORTS}
 exec "${BUN_PATH}" run src/index.ts -- "${USER_COMMAND}"
 EOF
 
