@@ -120,7 +120,7 @@ export interface BrowserInstance {
 /**
  * Find Firefox window ID using wmctrl, with retries
  */
-export async function findFirefoxWindow(maxRetries: number = 10, retryDelayMs: number = 500): Promise<string | null> {
+export async function findFirefoxWindow(maxRetries: number = 20, retryDelayMs: number = 1000): Promise<string | null> {
 	for (let attempt = 1; attempt <= maxRetries; attempt++) {
 		const listProc = Bun.spawn(["wmctrl", "-l"], {
 			stdout: "pipe",
