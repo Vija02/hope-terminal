@@ -31,11 +31,39 @@ show_help() {
 show_status() {
     echo -e "${CYAN}=== Service Status ===${NC}"
     echo
-    echo -e "${GREEN}hope-terminal:${NC}"
-    systemctl --user status hope-terminal --no-pager 2>/dev/null || echo -e "${YELLOW}  Service not installed or not running${NC}"
+    
+    # Check systemd services
+    echo -e "${GREEN}Systemd Services:${NC}"
+    echo -e "  hope-terminal: $(systemctl --user is-active hope-terminal 2>/dev/null || echo 'not installed')"
+    echo -e "  hope-clicker:  $(systemctl --user is-active hope-clicker 2>/dev/null || echo 'not installed')"
     echo
-    echo -e "${GREEN}hope-clicker:${NC}"
-    systemctl --user status hope-clicker --no-pager 2>/dev/null || echo -e "${YELLOW}  Service not installed or not running${NC}"
+    
+    # Check running processes
+    echo -e "${GREEN}Running Processes:${NC}"
+    
+    local terminal_pid=$(pgrep -f "bun.*index.ts" 2>/dev/null)
+    if [ -n "$terminal_pid" ]; then
+        echo -e "  hope-terminal: ${GREEN}running${NC} (PID: $terminal_pid)"
+    else
+        echo -e "  hope-terminal: ${YELLOW}not running${NC}"
+    fi
+    
+    local clicker_pid=$(pgrep -f "bun.*clicker-remap.ts" 2>/dev/null)
+    if [ -n "$clicker_pid" ]; then
+        echo -e "  hope-clicker:  ${GREEN}running${NC} (PID: $clicker_pid)"
+    else
+        echo -e "  hope-clicker:  ${YELLOW}not running${NC}"
+    fi
+    
+    # Check Firefox
+    echo
+    echo -e "${GREEN}Firefox:${NC}"
+    local firefox_pid=$(pgrep -f "firefox" 2>/dev/null | head -1)
+    if [ -n "$firefox_pid" ]; then
+        echo -e "  ${GREEN}running${NC} (PID: $firefox_pid)"
+    else
+        echo -e "  ${YELLOW}not running${NC}"
+    fi
 }
 
 show_logs() {
@@ -45,26 +73,46 @@ show_logs() {
     echo -e "${CYAN}=== $title ===${NC}"
     echo
     
-    # First show recent logs (last 50 lines), then follow
-    echo -e "${YELLOW}Recent logs:${NC}"
-    journalctl --user $services --no-pager -n 50 2>/dev/null
+    # Try journalctl first (for systemd services)
+    local has_logs=false
     
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}No logs found. Services may not be running.${NC}"
+    # Check if journalctl has any logs for these services
+    local log_count=$(journalctl --user $services --no-pager -n 1 2>/dev/null | wc -l)
+    
+    if [ "$log_count" -gt 0 ]; then
+        has_logs=true
+        echo -e "${YELLOW}Recent logs (from journalctl):${NC}"
+        journalctl --user $services --no-pager -n 100 2>/dev/null
         echo
-        echo -e "To start the services:"
-        echo -e "  ${YELLOW}systemctl --user start hope-terminal${NC}"
-        echo -e "  ${YELLOW}systemctl --user start hope-clicker${NC}"
+        echo -e "${YELLOW}Following new logs (Ctrl+C to stop)...${NC}"
         echo
-        echo -e "Or check status with:"
-        echo -e "  ${YELLOW}./logs.sh status${NC}"
-        exit 1
+        journalctl --user $services -f
     fi
     
-    echo
-    echo -e "${YELLOW}Following new logs (Ctrl+C to stop)...${NC}"
-    echo
-    journalctl --user $services -f
+    if [ "$has_logs" = false ]; then
+        echo -e "${YELLOW}No systemd logs found.${NC}"
+        echo
+        echo -e "The service might be running via:"
+        echo -e "  - Desktop autostart (logs go to ~/.xsession-errors)"
+        echo -e "  - Direct terminal execution (logs shown in that terminal)"
+        echo
+        
+        # Check .xsession-errors
+        if [ -f ~/.xsession-errors ]; then
+            echo -e "${YELLOW}Recent entries from ~/.xsession-errors:${NC}"
+            grep -E "(hope|Hope|firefox|Firefox|clicker|Clicker)" ~/.xsession-errors 2>/dev/null | tail -50
+            echo
+        fi
+        
+        # Show status instead
+        echo -e "${YELLOW}Current status:${NC}"
+        show_status
+        
+        echo
+        echo -e "To enable systemd logging, start services with:"
+        echo -e "  ${YELLOW}systemctl --user start hope-terminal${NC}"
+        echo -e "  ${YELLOW}systemctl --user start hope-clicker${NC}"
+    fi
 }
 
 case "${1:-all}" in
