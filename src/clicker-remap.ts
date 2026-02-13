@@ -49,6 +49,34 @@ function parseArgs(): { deviceName: string; listDevices: boolean } {
 }
 
 /**
+ * Activate the Firefox window to ensure it can receive xdotool key events.
+ * Firefox requires initial focus/activation before it responds to --window key events.
+ */
+async function activateFirefoxWindow(windowId: string): Promise<boolean> {
+  try {
+    console.log(`[Clicker] Activating Firefox window ${windowId}...`);
+    const proc = Bun.spawn(["xdotool", "windowactivate", "--sync", windowId], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      console.warn(`[Clicker] windowactivate failed (exit ${exitCode}): ${stderr}`);
+      return false;
+    }
+
+    console.log(`[Clicker] Firefox window activated successfully`);
+    return true;
+  } catch (error) {
+    console.error("[Clicker] Failed to activate window:", error);
+    return false;
+  }
+}
+
+/**
  * Send a key to the Firefox window using xdotool
  */
 async function sendKeyToFirefox(keyName: string): Promise<boolean> {
@@ -61,6 +89,8 @@ async function sendKeyToFirefox(keyName: string): Promise<boolean> {
     if (windowId) {
       cachedFirefoxWindowId = windowId;
       console.log(`[Clicker] Found Firefox window: ${windowId}`);
+      // Activate the window once when we first find it
+      await activateFirefoxWindow(windowId);
     }
   }
 
@@ -240,6 +270,9 @@ async function main(): Promise<void> {
   if (firefoxWindow) {
     cachedFirefoxWindowId = firefoxWindow;
     console.log(`[Clicker] Firefox window found: ${firefoxWindow}`);
+    // Activate the window once to ensure it can receive xdotool key events
+    // Firefox needs initial focus/activation before it responds to --window keys
+    await activateFirefoxWindow(firefoxWindow);
   } else {
     console.log("[Clicker] Firefox window not found yet (will retry on key press)");
   }
