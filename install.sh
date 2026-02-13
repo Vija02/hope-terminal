@@ -65,7 +65,8 @@ echo -e "${YELLOW}Bun path:${NC} $BUN_PATH"
 echo
 
 # Default command - pi-streamer
-PI_STREAMER_PATH="${SCRIPT_DIR}/../pi-streamer/src/index.ts"
+# Resolve to absolute path
+PI_STREAMER_PATH="$(cd "${SCRIPT_DIR}/.." && pwd)/pi-streamer/src/index.ts"
 DEFAULT_COMMAND="${BUN_PATH} run ${PI_STREAMER_PATH}"
 DEFAULT_ENV="STREAM_URL=https://recordings.michaelsalim.co.uk/stream"
 
