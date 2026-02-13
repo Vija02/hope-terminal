@@ -73,12 +73,24 @@ echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
 echo
 
 # Step 1: Install required dependencies
-echo -e "${GREEN}Step 1: Installing required dependencies...${NC}"
+echo -e "${GREEN}Step 1: Checking required dependencies...${NC}"
 
-apt-get update
-apt-get install -y xdotool wmctrl
+MISSING_DEPS=""
+if ! command -v xdotool &> /dev/null; then
+    MISSING_DEPS="$MISSING_DEPS xdotool"
+fi
+if ! command -v wmctrl &> /dev/null; then
+    MISSING_DEPS="$MISSING_DEPS wmctrl"
+fi
 
-echo -e "${GREEN}Installed xdotool and wmctrl${NC}"
+if [ -n "$MISSING_DEPS" ]; then
+    echo -e "${YELLOW}Installing missing dependencies:${NC}$MISSING_DEPS"
+    apt-get update
+    apt-get install -y $MISSING_DEPS
+    echo -e "${GREEN}Installed$MISSING_DEPS${NC}"
+else
+    echo -e "${GREEN}All dependencies already installed (xdotool, wmctrl)${NC}"
+fi
 
 # Add user to input group for clicker access
 if ! groups "$ACTUAL_USER" | grep -q '\binput\b'; then
