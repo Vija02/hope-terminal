@@ -37,18 +37,27 @@ fi
 
 ACTUAL_USER_HOME=$(eval echo "~$ACTUAL_USER")
 
-# Step 1: Stop and disable systemd user service
-echo -e "${GREEN}Step 1: Stopping systemd user service...${NC}"
+# Step 1: Stop and disable systemd user services
+echo -e "${GREEN}Step 1: Stopping systemd user services...${NC}"
 su - "$ACTUAL_USER" -c "systemctl --user stop hope-terminal.service" 2>/dev/null || true
 su - "$ACTUAL_USER" -c "systemctl --user disable hope-terminal.service" 2>/dev/null || true
+su - "$ACTUAL_USER" -c "systemctl --user stop hope-clicker.service" 2>/dev/null || true
+su - "$ACTUAL_USER" -c "systemctl --user disable hope-clicker.service" 2>/dev/null || true
 
-# Step 2: Remove systemd user service
+# Step 2: Remove systemd user services
 SYSTEMD_SERVICE="${ACTUAL_USER_HOME}/.config/systemd/user/hope-terminal.service"
 if [ -f "$SYSTEMD_SERVICE" ]; then
-    echo -e "${GREEN}Removing systemd user service...${NC}"
+    echo -e "${GREEN}Removing hope-terminal systemd user service...${NC}"
     rm -f "$SYSTEMD_SERVICE"
-    su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" 2>/dev/null || true
 fi
+
+CLICKER_SERVICE="${ACTUAL_USER_HOME}/.config/systemd/user/hope-clicker.service"
+if [ -f "$CLICKER_SERVICE" ]; then
+    echo -e "${GREEN}Removing hope-clicker systemd user service...${NC}"
+    rm -f "$CLICKER_SERVICE"
+fi
+
+su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" 2>/dev/null || true
 
 # Step 3: Remove autostart desktop entry
 DESKTOP_FILE="${ACTUAL_USER_HOME}/.config/autostart/hope-terminal.desktop"
@@ -57,11 +66,17 @@ if [ -f "$DESKTOP_FILE" ]; then
     rm -f "$DESKTOP_FILE"
 fi
 
-# Step 4: Remove launcher script
+# Step 4: Remove launcher scripts
 LAUNCHER_SCRIPT="${SCRIPT_DIR}/run-hope-terminal.sh"
 if [ -f "$LAUNCHER_SCRIPT" ]; then
-    echo -e "${GREEN}Removing launcher script...${NC}"
+    echo -e "${GREEN}Removing hope-terminal launcher script...${NC}"
     rm -f "$LAUNCHER_SCRIPT"
+fi
+
+CLICKER_LAUNCHER="${SCRIPT_DIR}/run-hope-clicker.sh"
+if [ -f "$CLICKER_LAUNCHER" ]; then
+    echo -e "${GREEN}Removing hope-clicker launcher script...${NC}"
+    rm -f "$CLICKER_LAUNCHER"
 fi
 
 # Step 5: Remove sudoers file
@@ -92,6 +107,7 @@ echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Uninstall Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "Hope Terminal has been removed."
+echo -e "Hope Terminal and Hope Clicker have been removed."
 echo -e "Note: Passwordless shutdown has been disabled."
+echo -e "Note: User remains in 'input' group (may be used by other apps)."
 echo

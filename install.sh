@@ -72,8 +72,24 @@ echo
 echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
 echo
 
-# Step 1: Configure passwordless shutdown
-echo -e "${GREEN}Step 1: Configuring passwordless shutdown...${NC}"
+# Step 1: Install required dependencies
+echo -e "${GREEN}Step 1: Installing required dependencies...${NC}"
+
+apt-get update
+apt-get install -y xdotool wmctrl
+
+echo -e "${GREEN}Installed xdotool and wmctrl${NC}"
+
+# Add user to input group for clicker access
+if ! groups "$ACTUAL_USER" | grep -q '\binput\b'; then
+    usermod -aG input "$ACTUAL_USER"
+    echo -e "${GREEN}Added $ACTUAL_USER to input group (logout required for this to take effect)${NC}"
+else
+    echo -e "${YELLOW}User $ACTUAL_USER is already in input group${NC}"
+fi
+
+# Step 2: Configure passwordless shutdown
+echo -e "${GREEN}Step 2: Configuring passwordless shutdown...${NC}"
 
 SUDOERS_FILE="/etc/sudoers.d/hope-terminal-shutdown"
 cat > "$SUDOERS_FILE" << EOF
@@ -86,8 +102,8 @@ EOF
 chmod 440 "$SUDOERS_FILE"
 echo -e "${GREEN}Created sudoers file at ${SUDOERS_FILE}${NC}"
 
-# Step 2: Create the launcher script
-echo -e "${GREEN}Step 2: Creating launcher script...${NC}"
+# Step 3: Create the launcher script
+echo -e "${GREEN}Step 3: Creating launcher script...${NC}"
 
 LAUNCHER_SCRIPT="${SCRIPT_DIR}/run-hope-terminal.sh"
 cat > "$LAUNCHER_SCRIPT" << EOF
@@ -102,8 +118,8 @@ chmod +x "$LAUNCHER_SCRIPT"
 chown "$ACTUAL_USER:$ACTUAL_USER" "$LAUNCHER_SCRIPT"
 echo -e "${GREEN}Created launcher at ${LAUNCHER_SCRIPT}${NC}"
 
-# Step 3: Create autostart desktop entry
-echo -e "${GREEN}Step 3: Creating autostart entry...${NC}"
+# Step 4: Create autostart desktop entry
+echo -e "${GREEN}Step 4: Creating autostart entry...${NC}"
 
 AUTOSTART_DIR="${ACTUAL_USER_HOME}/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
@@ -125,8 +141,8 @@ EOF
 chown "$ACTUAL_USER:$ACTUAL_USER" "$DESKTOP_FILE"
 echo -e "${GREEN}Created autostart entry at ${DESKTOP_FILE}${NC}"
 
-# Step 4: Create systemd user service (alternative method)
-echo -e "${GREEN}Step 4: Creating systemd user service (alternative)...${NC}"
+# Step 5: Create systemd user service (alternative method)
+echo -e "${GREEN}Step 5: Creating systemd user services...${NC}"
 
 SYSTEMD_USER_DIR="${ACTUAL_USER_HOME}/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
@@ -152,27 +168,67 @@ EOF
 chown "$ACTUAL_USER:$ACTUAL_USER" "$SYSTEMD_SERVICE"
 echo -e "${GREEN}Created systemd user service at ${SYSTEMD_SERVICE}${NC}"
 
-# Enable the systemd user service
-echo -e "${GREEN}Enabling systemd user service...${NC}"
+# Create clicker launcher script
+CLICKER_LAUNCHER="${SCRIPT_DIR}/run-hope-clicker.sh"
+cat > "$CLICKER_LAUNCHER" << EOF
+#!/bin/bash
+# Hope Clicker Launcher Script
+
+cd "${SCRIPT_DIR}"
+exec "${BUN_PATH}" run src/clicker-remap.ts
+EOF
+
+chmod +x "$CLICKER_LAUNCHER"
+chown "$ACTUAL_USER:$ACTUAL_USER" "$CLICKER_LAUNCHER"
+echo -e "${GREEN}Created clicker launcher at ${CLICKER_LAUNCHER}${NC}"
+
+# Create clicker systemd user service
+CLICKER_SERVICE="${SYSTEMD_USER_DIR}/hope-clicker.service"
+cat > "$CLICKER_SERVICE" << EOF
+[Unit]
+Description=Hope Clicker - Presentation Clicker Key Forwarder
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${CLICKER_LAUNCHER}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+
+chown "$ACTUAL_USER:$ACTUAL_USER" "$CLICKER_SERVICE"
+echo -e "${GREEN}Created clicker service at ${CLICKER_SERVICE}${NC}"
+
+# Enable the systemd user services
+echo -e "${GREEN}Enabling systemd user services...${NC}"
 su - "$ACTUAL_USER" -c "systemctl --user daemon-reload" || true
 su - "$ACTUAL_USER" -c "systemctl --user enable hope-terminal.service" || true
+su - "$ACTUAL_USER" -c "systemctl --user enable hope-clicker.service" || true
 
 echo
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo
-echo -e "The service will start automatically on login."
+echo -e "${YELLOW}NOTE: You may need to logout and login again for the input group to take effect.${NC}"
 echo
-echo -e "To start now (choose one):"
-echo -e "  ${YELLOW}${LAUNCHER_SCRIPT}${NC}"
+echo -e "The services will start automatically on login."
+echo
+echo -e "To start now:"
 echo -e "  ${YELLOW}systemctl --user start hope-terminal${NC}"
+echo -e "  ${YELLOW}systemctl --user start hope-clicker${NC}"
 echo
 echo -e "To check status:"
 echo -e "  ${YELLOW}systemctl --user status hope-terminal${NC}"
+echo -e "  ${YELLOW}systemctl --user status hope-clicker${NC}"
 echo
 echo -e "To view logs:"
 echo -e "  ${YELLOW}journalctl --user -u hope-terminal -f${NC}"
+echo -e "  ${YELLOW}journalctl --user -u hope-clicker -f${NC}"
 echo
 echo -e "To uninstall:"
 echo -e "  ${YELLOW}sudo ./uninstall.sh${NC}"
