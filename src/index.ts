@@ -119,8 +119,11 @@ async function handlePowerDisconnect(): Promise<void> {
 /**
  * Check if browser is still running
  */
-function isBrowserRunning(): boolean {
-  return browser !== null && browser.process.exitCode === null;
+async function isBrowserRunning(): Promise<boolean> {
+  if (browser === null) {
+    return false;
+  }
+  return await browser.isRunning();
 }
 
 /**
@@ -137,9 +140,10 @@ function startScreenMonitor(): void {
     }
     
     const secondaryScreen = await findSecondaryScreen();
+    const browserRunning = await isBrowserRunning();
     
     // Screen connected but no browser (or browser was closed)
-    if (secondaryScreen && !isBrowserRunning()) {
+    if (secondaryScreen && !browserRunning) {
       if (browser) {
         // Browser was closed (e.g., Alt+F4)
         console.log(`\n[Main] Browser was closed, relaunching on ${secondaryScreen.name}...`);
@@ -158,14 +162,14 @@ function startScreenMonitor(): void {
     // Screen disconnected
     else if (!secondaryScreen && browser) {
       console.log(`\n[Main] Secondary screen disconnected (was: ${currentScreenName})`);
-      if (isBrowserRunning()) {
+      if (browserRunning) {
         await browser.close();
       }
       browser = null;
       currentScreenName = null;
     }
     // Screen changed (different screen connected)
-    else if (secondaryScreen && isBrowserRunning() && secondaryScreen.name !== currentScreenName) {
+    else if (secondaryScreen && browserRunning && secondaryScreen.name !== currentScreenName) {
       console.log(`\n[Main] Screen changed from ${currentScreenName} to ${secondaryScreen.name}`);
       await browser!.close();
       currentScreenName = secondaryScreen.name;

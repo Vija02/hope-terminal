@@ -115,6 +115,7 @@ user_pref("full-screen-api.warning.delay", 0);
 export interface BrowserInstance {
 	process: Subprocess
 	close: () => Promise<void>
+	isRunning: () => Promise<boolean>
 }
 
 /**
@@ -390,28 +391,65 @@ export async function launchBrowser(
 
 	return {
 		process: browserProcess,
+		isRunning: async () => {
+			// Firefox daemonizes itself, so we can't rely on process.exitCode
+			// Instead, check if the Firefox window still exists using wmctrl
+			const windowId = await findFirefoxWindow(1, 100) // Quick single check
+			return windowId !== null
+		},
 		close: async () => {
 			console.log("[Browser] Closing browser...")
 
-			// Try graceful termination first
-			browserProcess.kill("SIGTERM")
-
-			// Wait up to 5 seconds for graceful exit
-			const timeout = 5000
-			const startTime = Date.now()
-
-			while (
-				browserProcess.exitCode === null &&
-				Date.now() - startTime < timeout
-			) {
-				await new Promise((resolve) => setTimeout(resolve, 100))
+			// Firefox may have daemonized, so we need to kill by window/process name
+			// First try to find and kill via wmctrl/pkill
+			const windowId = await findFirefoxWindow(1, 100)
+			if (windowId) {
+				// Use wmctrl to close the window gracefully
+				const closeProc = Bun.spawn(["wmctrl", "-i", "-c", windowId], {
+					stdout: "ignore",
+					stderr: "ignore",
+				})
+				await closeProc.exited
+				
+				// Wait for window to close
+				const timeout = 5000
+				const startTime = Date.now()
+				while (Date.now() - startTime < timeout) {
+					await new Promise((resolve) => setTimeout(resolve, 200))
+					const stillExists = await findFirefoxWindow(1, 100)
+					if (!stillExists) {
+						console.log("[Browser] Browser closed via wmctrl")
+						return
+					}
+				}
 			}
 
-			// Force kill if still running
+			// Fallback: Try to kill the spawned process if it's still tracked
 			if (browserProcess.exitCode === null) {
-				console.log("[Browser] Force killing browser...")
-				browserProcess.kill("SIGKILL")
+				browserProcess.kill("SIGTERM")
+
+				const timeout = 3000
+				const startTime = Date.now()
+
+				while (
+					browserProcess.exitCode === null &&
+					Date.now() - startTime < timeout
+				) {
+					await new Promise((resolve) => setTimeout(resolve, 100))
+				}
+
+				if (browserProcess.exitCode === null) {
+					console.log("[Browser] Force killing browser...")
+					browserProcess.kill("SIGKILL")
+				}
 			}
+
+			// Final fallback: pkill firefox for this profile
+			const pkillProc = Bun.spawn(["pkill", "-f", PROFILE_DIR], {
+				stdout: "ignore",
+				stderr: "ignore",
+			})
+			await pkillProc.exited
 
 			console.log("[Browser] Browser closed")
 		},
