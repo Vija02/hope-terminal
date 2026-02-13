@@ -113,6 +113,9 @@ async function eventLoop(): Promise<void> {
       break;
     }
 
+    // Debug: show all events
+    console.log(`[Clicker] Event: type=${event.type}, code=${event.code}, value=${event.value}`);
+
     // Only process key press events (not release or repeat)
     if (event.type === EV_KEY && event.value === 1) {
       const keyName = KEY_NAMES[event.code];

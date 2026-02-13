@@ -145,11 +145,9 @@ const libc = dlopen("libc.so.6", {
  */
 export class InputDeviceReader {
   private fd: number | null = null;
-  private stream: ReadableStream<Uint8Array> | null = null;
-  private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  private buffer: Uint8Array = new Uint8Array(0);
   private grabbed: boolean = false;
   private closed: boolean = false;
+  private fsModule: typeof import("node:fs") | null = null;
   public devicePath: string;
   public deviceName: string;
 
@@ -163,10 +161,10 @@ export class InputDeviceReader {
    */
   async open(grab: boolean = true): Promise<boolean> {
     try {
-      const fs = await import("node:fs");
+      this.fsModule = await import("node:fs");
 
-      // Open file descriptor for ioctl
-      const fd = fs.openSync(this.devicePath, fs.constants.O_RDONLY);
+      // Open file descriptor for reading (non-blocking would require O_NONBLOCK)
+      const fd = this.fsModule.openSync(this.devicePath, this.fsModule.constants.O_RDONLY);
       this.fd = fd;
 
       if (grab) {
@@ -185,11 +183,6 @@ export class InputDeviceReader {
         }
       }
 
-      // Create readable stream from file
-      const file = Bun.file(this.devicePath);
-      this.stream = file.stream();
-      this.reader = this.stream.getReader() as ReadableStreamDefaultReader<Uint8Array>;
-
       console.log(
         `[Evdev] Opened device: ${this.deviceName} (${this.devicePath})`
       );
@@ -205,44 +198,35 @@ export class InputDeviceReader {
    * Returns null on EOF or error
    */
   async readEvent(): Promise<InputEvent | null> {
-    if (!this.reader || this.closed) {
+    if (this.fd === null || this.closed || !this.fsModule) {
       return null;
     }
 
     try {
-      // Read until we have at least one full event
-      while (this.buffer.length < INPUT_EVENT_SIZE) {
-        const { value, done } = await this.reader.read();
-        if (done || this.closed) {
-          return null;
-        }
-        if (value) {
-          // Concatenate buffers
-          const newBuffer = new Uint8Array(this.buffer.length + value.length);
-          newBuffer.set(this.buffer);
-          newBuffer.set(value, this.buffer.length);
-          this.buffer = newBuffer;
-        }
+      // Read exactly one input_event struct (24 bytes)
+      const buffer = Buffer.alloc(INPUT_EVENT_SIZE);
+      
+      // Use synchronous read - it will block until data is available
+      const bytesRead = this.fsModule.readSync(this.fd, buffer, 0, INPUT_EVENT_SIZE, null);
+      
+      if (bytesRead === 0 || this.closed) {
+        return null;
+      }
+      
+      if (bytesRead !== INPUT_EVENT_SIZE) {
+        console.warn(`[Evdev] Partial read: ${bytesRead} bytes (expected ${INPUT_EVENT_SIZE})`);
+        return null;
       }
 
       // Parse the event
-      const dataView = new DataView(
-        this.buffer.buffer,
-        this.buffer.byteOffset,
-        this.buffer.byteLength
-      );
-
       // Offset 16: type (u16, little-endian)
-      const type = dataView.getUint16(16, true);
+      const type = buffer.readUInt16LE(16);
 
       // Offset 18: code (u16, little-endian)
-      const code = dataView.getUint16(18, true);
+      const code = buffer.readUInt16LE(18);
 
       // Offset 20: value (s32, little-endian)
-      const value = dataView.getInt32(20, true);
-
-      // Remove the processed event from buffer
-      this.buffer = this.buffer.slice(INPUT_EVENT_SIZE);
+      const value = buffer.readInt32LE(20);
 
       return { type, code, value };
     } catch (error) {
@@ -269,22 +253,13 @@ export class InputDeviceReader {
       this.grabbed = false;
     }
 
-    if (this.reader) {
+    if (this.fd !== null && this.fsModule) {
       try {
-        await this.reader.cancel();
-      } catch {}
-      this.reader = null;
-    }
-
-    if (this.fd !== null) {
-      try {
-        const fs = await import("node:fs");
-        fs.closeSync(this.fd);
+        this.fsModule.closeSync(this.fd);
       } catch {}
       this.fd = null;
     }
 
-    this.stream = null;
     console.log(`[Evdev] Closed device: ${this.deviceName}`);
   }
 }
