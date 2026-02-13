@@ -76,13 +76,13 @@ show_logs() {
     # Try journalctl first (for systemd services)
     local has_logs=false
     
-    # Check if journalctl has any logs for these services
-    local log_count=$(journalctl --user $services --no-pager -n 1 2>/dev/null | wc -l)
+    # Check if journalctl has any logs for these services (from this boot only)
+    local log_count=$(journalctl --user $services --no-pager -b -n 1 2>/dev/null | wc -l)
     
     if [ "$log_count" -gt 0 ]; then
         has_logs=true
-        echo -e "${YELLOW}Recent logs (from journalctl):${NC}"
-        journalctl --user $services --no-pager -n 100 2>/dev/null
+        echo -e "${YELLOW}Logs from this boot:${NC}"
+        journalctl --user $services --no-pager -b -n 100 2>/dev/null
         echo
         echo -e "${YELLOW}Following new logs (Ctrl+C to stop)...${NC}"
         echo
