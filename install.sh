@@ -64,9 +64,14 @@ fi
 echo -e "${YELLOW}Bun path:${NC} $BUN_PATH"
 echo
 
+# Default command - pi-streamer
+PI_STREAMER_PATH="${SCRIPT_DIR}/../pi-streamer/src/index.ts"
+DEFAULT_COMMAND="STREAM_URL=https://recordings.michaelsalim.co.uk/stream ${BUN_PATH} run ${PI_STREAMER_PATH}"
+
 # Ask for the command to run
-read -p "Enter the command to run (default: echo 'Hope Terminal Started'): " USER_COMMAND
-USER_COMMAND="${USER_COMMAND:-echo 'Hope Terminal Started'}"
+echo -e "Default command: ${YELLOW}${DEFAULT_COMMAND}${NC}"
+read -p "Enter the command to run (press Enter for default): " USER_COMMAND
+USER_COMMAND="${USER_COMMAND:-$DEFAULT_COMMAND}"
 
 echo
 echo -e "${YELLOW}Command:${NC} $USER_COMMAND"
