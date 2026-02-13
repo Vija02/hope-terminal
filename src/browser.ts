@@ -156,12 +156,52 @@ export async function findFirefoxWindow(maxRetries: number = 10, retryDelayMs: n
 }
 
 /**
+ * Get the current position of a window using wmctrl
+ */
+async function getWindowPosition(windowId: string): Promise<{ x: number; y: number } | null> {
+	try {
+		// Use wmctrl -l -G to get window geometry
+		const proc = Bun.spawn(["wmctrl", "-l", "-G"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		})
+
+		const output = await new Response(proc.stdout).text()
+		await proc.exited
+
+		// Find the line with our window ID
+		const lines = output.split("\n")
+		for (const line of lines) {
+			if (line.startsWith(windowId)) {
+				// Format: <windowId> <desktop> <x> <y> <width> <height> <hostname> <title>
+				const parts = line.split(/\s+/)
+				if (parts.length >= 6) {
+					const x = parseInt(parts[2]!, 10)
+					const y = parseInt(parts[3]!, 10)
+					return { x, y }
+				}
+			}
+		}
+	} catch (error) {
+		console.warn("[Browser] Failed to get window position:", error)
+	}
+	return null
+}
+
+/**
  * Move Firefox window to the specified screen using wmctrl (works with XWayland)
  */
-async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
+async function moveFirefoxToScreen(screen: ScreenInfo, isStartup: boolean = false): Promise<boolean> {
 	try {
-		// Wait for window to be created
-		await new Promise((resolve) => setTimeout(resolve, 1000))
+		// At system startup, the window manager may need more time to be fully ready
+		// This helps when HDMI is already connected at boot
+		if (isStartup) {
+			console.log("[Browser] Startup mode: waiting for window manager to be fully ready...")
+			await new Promise((resolve) => setTimeout(resolve, 3000))
+		} else {
+			// Wait for window to be created
+			await new Promise((resolve) => setTimeout(resolve, 1000))
+		}
 
 		// Find Firefox window with retries
 		const windowId = await findFirefoxWindow()
@@ -173,58 +213,95 @@ async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
 
 		console.log(`[Browser] Found Firefox window: ${windowId}`)
 
-		// Remove fullscreen first to allow moving
-		const unfullscreenProc = Bun.spawn(
-			["wmctrl", "-i", "-r", windowId, "-b", "remove,fullscreen"],
-			{
-				stdout: "ignore",
-				stderr: "ignore",
-			},
-		)
-		await unfullscreenProc.exited
+		// Try moving the window, with retries to handle race conditions at startup
+		const maxMoveAttempts = isStartup ? 3 : 1
+		
+		for (let attempt = 1; attempt <= maxMoveAttempts; attempt++) {
+			if (attempt > 1) {
+				console.log(`[Browser] Move attempt ${attempt}/${maxMoveAttempts}...`)
+				await new Promise((resolve) => setTimeout(resolve, 1000))
+			}
 
-		await new Promise((resolve) => setTimeout(resolve, 200))
+			// Remove fullscreen first to allow moving
+			const unfullscreenProc = Bun.spawn(
+				["wmctrl", "-i", "-r", windowId, "-b", "remove,fullscreen"],
+				{
+					stdout: "ignore",
+					stderr: "ignore",
+				},
+			)
+			await unfullscreenProc.exited
 
-		// Move window to the target screen position
-		// wmctrl uses: -e gravity,x,y,width,height (0 = default gravity)
-		const moveProc = Bun.spawn(
-			[
-				"wmctrl",
-				"-i",
-				"-r",
-				windowId,
-				"-e",
-				`0,${screen.xOffset},${screen.yOffset},${screen.width},${screen.height}`,
-			],
-			{
-				stdout: "ignore",
-				stderr: "pipe",
-			},
-		)
+			await new Promise((resolve) => setTimeout(resolve, 300))
 
-		const moveExitCode = await moveProc.exited
-		if (moveExitCode !== 0) {
-			const stderr = await new Response(moveProc.stderr).text()
-			console.warn("[Browser] wmctrl move failed:", stderr)
-			return false
+			// Move window to the target screen position
+			// wmctrl uses: -e gravity,x,y,width,height (0 = default gravity)
+			const moveProc = Bun.spawn(
+				[
+					"wmctrl",
+					"-i",
+					"-r",
+					windowId,
+					"-e",
+					`0,${screen.xOffset},${screen.yOffset},${screen.width},${screen.height}`,
+				],
+				{
+					stdout: "ignore",
+					stderr: "pipe",
+				},
+			)
+
+			const moveExitCode = await moveProc.exited
+			if (moveExitCode !== 0) {
+				const stderr = await new Response(moveProc.stderr).text()
+				console.warn("[Browser] wmctrl move failed:", stderr)
+				continue
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, 300))
+
+			// Make fullscreen again
+			const fullscreenProc = Bun.spawn(
+				["wmctrl", "-i", "-r", windowId, "-b", "add,fullscreen"],
+				{
+					stdout: "ignore",
+					stderr: "ignore",
+				},
+			)
+			await fullscreenProc.exited
+
+			await new Promise((resolve) => setTimeout(resolve, 200))
+
+			// Verify the window is on the correct screen
+			const pos = await getWindowPosition(windowId)
+			if (pos) {
+				// Check if window is within the target screen bounds
+				const isOnCorrectScreen = 
+					pos.x >= screen.xOffset && 
+					pos.x < screen.xOffset + screen.width
+
+				if (isOnCorrectScreen) {
+					console.log(
+						`[Browser] Moved Firefox to ${screen.name} at ${screen.xOffset},${screen.yOffset} (verified at ${pos.x},${pos.y})`,
+					)
+					return true
+				} else {
+					console.warn(
+						`[Browser] Window is at ${pos.x},${pos.y} but should be on screen at x=${screen.xOffset}`,
+					)
+					// Continue to retry
+				}
+			} else {
+				// Could not verify, assume success
+				console.log(
+					`[Browser] Moved Firefox to ${screen.name} at ${screen.xOffset},${screen.yOffset} (unverified)`,
+				)
+				return true
+			}
 		}
 
-		await new Promise((resolve) => setTimeout(resolve, 200))
-
-		// Make fullscreen again
-		const fullscreenProc = Bun.spawn(
-			["wmctrl", "-i", "-r", windowId, "-b", "add,fullscreen"],
-			{
-				stdout: "ignore",
-				stderr: "ignore",
-			},
-		)
-		await fullscreenProc.exited
-
-		console.log(
-			`[Browser] Moved Firefox to ${screen.name} at ${screen.xOffset},${screen.yOffset}`,
-		)
-		return true
+		console.error("[Browser] Failed to move window to correct screen after all attempts")
+		return false
 	} catch (error) {
 		console.error("[Browser] Failed to move Firefox window:", error)
 		return false
@@ -233,9 +310,12 @@ async function moveFirefoxToScreen(screen: ScreenInfo): Promise<boolean> {
 
 /**
  * Launch Firefox in kiosk mode on the specified screen
+ * @param screen The screen to launch on
+ * @param isStartup Whether this is during initial system startup (allows extra time for window manager)
  */
 export async function launchBrowser(
 	screen: ScreenInfo,
+	isStartup: boolean = false,
 ): Promise<BrowserInstance | null> {
 	const firefox = await findFirefoxExecutable()
 
@@ -306,7 +386,7 @@ export async function launchBrowser(
 	console.log(`[Browser] Browser started with PID: ${browserProcess.pid}`)
 
 	// Use wmctrl to move the Firefox window to the correct screen
-	await moveFirefoxToScreen(screen)
+	await moveFirefoxToScreen(screen, isStartup)
 
 	return {
 		process: browserProcess,

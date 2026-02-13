@@ -248,7 +248,8 @@ async function main(): Promise<void> {
   if (secondaryScreen) {
     console.log("\n[Main] Step 2: Launching browser on secondary screen...");
     currentScreenName = secondaryScreen.name;
-    browser = await launchBrowser(secondaryScreen);
+    // Pass isStartup=true for initial launch to allow extra time for window manager
+    browser = await launchBrowser(secondaryScreen, true);
     
     if (!browser) {
       console.warn("[Main] Failed to launch browser, will retry when screen is detected");
