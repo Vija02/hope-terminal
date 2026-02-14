@@ -158,31 +158,16 @@ chmod +x "$LAUNCHER_SCRIPT"
 chown "$ACTUAL_USER:$ACTUAL_USER" "$LAUNCHER_SCRIPT"
 echo -e "${GREEN}Created launcher at ${LAUNCHER_SCRIPT}${NC}"
 
-# Step 4: Create autostart desktop entry
-echo -e "${GREEN}Step 4: Creating autostart entry...${NC}"
+# Step 4: Create systemd user services
+echo -e "${GREEN}Step 4: Creating systemd user services...${NC}"
 
+# Remove any old desktop autostart entry to prevent duplicate execution
 AUTOSTART_DIR="${ACTUAL_USER_HOME}/.config/autostart"
-mkdir -p "$AUTOSTART_DIR"
-chown "$ACTUAL_USER:$ACTUAL_USER" "$AUTOSTART_DIR"
-
-DESKTOP_FILE="${AUTOSTART_DIR}/hope-terminal.desktop"
-cat > "$DESKTOP_FILE" << EOF
-[Desktop Entry]
-Type=Application
-Name=Hope Terminal
-Comment=Kiosk Display Manager with Power-Off Handling
-Exec=${LAUNCHER_SCRIPT}
-Terminal=false
-Hidden=false
-X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=5
-EOF
-
-chown "$ACTUAL_USER:$ACTUAL_USER" "$DESKTOP_FILE"
-echo -e "${GREEN}Created autostart entry at ${DESKTOP_FILE}${NC}"
-
-# Step 5: Create systemd user service (alternative method)
-echo -e "${GREEN}Step 5: Creating systemd user services...${NC}"
+OLD_DESKTOP_FILE="${AUTOSTART_DIR}/hope-terminal.desktop"
+if [ -f "$OLD_DESKTOP_FILE" ]; then
+    rm -f "$OLD_DESKTOP_FILE"
+    echo -e "${YELLOW}Removed old desktop autostart entry to prevent duplicate execution${NC}"
+fi
 
 SYSTEMD_USER_DIR="${ACTUAL_USER_HOME}/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
