@@ -51,24 +51,50 @@ function parseArgs(): { deviceName: string; listDevices: boolean } {
 /**
  * Activate the Firefox window to ensure it can receive xdotool key events.
  * Firefox requires initial focus/activation before it responds to --window key events.
+ * We also send a click to ensure the page content is focused and ready for input.
  */
 async function activateFirefoxWindow(windowId: string): Promise<boolean> {
   try {
     console.log(`[Clicker] Activating Firefox window ${windowId}...`);
-    const proc = Bun.spawn(["xdotool", "windowactivate", "--sync", windowId], {
+    
+    // First, activate the window
+    const activateProc = Bun.spawn(["xdotool", "windowactivate", "--sync", windowId], {
       stdout: "pipe",
       stderr: "pipe",
     });
 
-    const exitCode = await proc.exited;
+    const activateExitCode = await activateProc.exited;
 
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      console.warn(`[Clicker] windowactivate failed (exit ${exitCode}): ${stderr}`);
+    if (activateExitCode !== 0) {
+      const stderr = await new Response(activateProc.stderr).text();
+      console.warn(`[Clicker] windowactivate failed (exit ${activateExitCode}): ${stderr}`);
       return false;
     }
 
-    console.log(`[Clicker] Firefox window activated successfully`);
+    // Wait for the page to be fully loaded and interactive
+    console.log(`[Clicker] Waiting for Firefox to be fully loaded...`);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Send a click to ensure the page content is focused
+    // This simulates the manual click that was required before
+    console.log(`[Clicker] Sending click to Firefox window to ensure focus...`);
+    const clickProc = Bun.spawn(["xdotool", "click", "--window", windowId, "1"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const clickExitCode = await clickProc.exited;
+
+    if (clickExitCode !== 0) {
+      const stderr = await new Response(clickProc.stderr).text();
+      console.warn(`[Clicker] click failed (exit ${clickExitCode}): ${stderr}`);
+      // Don't return false - activation may still have worked
+    }
+
+    // Small delay after click to let Firefox process it
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    console.log(`[Clicker] Firefox window activated and clicked successfully`);
     return true;
   } catch (error) {
     console.error("[Clicker] Failed to activate window:", error);
